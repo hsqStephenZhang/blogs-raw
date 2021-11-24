@@ -33,16 +33,7 @@ perf  这个工具大家可能都用过，非常强大，但是也不免让人�
 
 
 
-## 2. perf 如何实现
-
-
-
-1. 计数。 计算事件发生的次数。
-2. 基于事件的采样。 这是一种不太准确的计数方式：每当发生特定阈值数量的事件时，就会记录一个样本，产生对应的时间。
-3. 基于时间的采样。 这是一种不太精确的计数方式：以定义的频率记录样本。
-4. 基于指令的采样（仅限 AMD64）。 处理器遵循出现在给定时间间隔内的指令，并对它们产生的事件进行采样。 这允许跟进单个指令并查看哪些指令对性能至关重要。
-
-
+## 2. perf 底层如何实现
 
 
 
@@ -73,4 +64,207 @@ static __initconst const struct x86_pmu intel_pmu = {
    /* other callbacks */
 }
 ```
+
+
+
+接下来研究一下 intel_pmu_handle_irq 中究竟做了什么**黑科技**？RTFSC！
+
+
+
+这个 handler 的处理其实是一个循环，因为每当我们处理好一次 pmu overflow 之后，可能在这段时间内，重新触发了 overflow，导致我们不得不处理，但也应该防止这个 loop 执行次数过多，也就引入了  loops 变量进行统计。
+
+```c
+static int intel_pmu_handle_irq(struct pt_regs *regs)
+{
+	struct cpu_hw_events *cpuc;
+	int loops;
+	u64 status;
+	int handled;
+	int pmu_enabled;
+
+	cpuc = this_cpu_ptr(&cpu_hw_events);
+	pmu_enabled = cpuc->enabled;
+	loops = 0;
+  
+  /*
+   	setup context here
+  */
+  
+  // again loop
+again:
+	intel_pmu_lbr_read();
+	intel_pmu_ack_status(status);
+	if (++loops > 100) {
+		static bool warned;
+
+		if (!warned) {
+			WARN(1, "perfevents: irq loop stuck!\n");
+			perf_event_print_debug();
+			warned = true;
+		}
+		intel_pmu_reset();
+		goto done;
+	}
+
+	handled += handle_pmi_common(regs, status);
+
+	status = intel_pmu_get_status();
+	if (status)
+		goto again;
+
+done:
+	cpuc->enabled = pmu_enabled;
+	if (pmu_enabled)
+		__intel_pmu_enable_all(0, true);
+	intel_bts_enable_local();
+
+	// return
+}
+```
+
+
+
+如果将一些干扰因素抽离，就可以得到下面这个主干逻辑。就是一个不断处理 pmi 中断的过程。核心逻辑在 `handle_pmi_common` 中
+
+```c
+static int intel_pmu_handle_irq(struct pt_regs *regs)
+{
+ 	// 1. set up context
+  
+  // 2. loop
+  do {
+    // core logic 
+		handled += handle_pmi_common(regs, status);
+  } while (intel_pmu_get_status()!=0)
+}
+```
+
+
+
+可以看出，`handle_pmi_common` 主要分为三个步骤进行处理
+
+1. processor trace 
+2. perf metrics
+3. perf event overflow 
+
+```c
+static int handle_pmi_common(struct pt_regs *regs, u64 status)
+{
+	// 上下文环境准备
+
+	/*
+	 * Intel PT(Processor Trace) 处理
+	 */
+	if (__test_and_clear_bit(GLOBAL_STATUS_TRACE_TOPAPMI_BIT, (unsigned long *)&status)) {
+		handled++;
+		if (unlikely(perf_guest_cbs && perf_guest_cbs->is_in_guest() &&
+			perf_guest_cbs->handle_intel_pt_intr))
+			perf_guest_cbs->handle_intel_pt_intr();
+		else
+			intel_pt_interrupt();
+	}
+
+	/*
+	 * Intel Perf mertrics 处理
+	 */
+	if (__test_and_clear_bit(GLOBAL_STATUS_PERF_METRICS_OVF_BIT, (unsigned long *)&status)) {
+		handled++;
+		if (x86_pmu.update_topdown_event)
+			x86_pmu.update_topdown_event(NULL);
+	}
+
+	status |= cpuc->intel_cp_status;
+
+  // 针对每个 overflow bit，都要进行对应的处理，上报 perf event
+	for_each_set_bit(bit, (unsigned long *)&status, X86_PMC_IDX_MAX) {
+		struct perf_event *event = cpuc->events[bit];
+
+		handled++;
+
+		if (!test_bit(bit, cpuc->active_mask))
+			continue;
+
+		if (!intel_pmu_save_and_restart(event))
+			continue;
+
+		perf_sample_data_init(&data, 0, event->hw.last_period);
+
+		if (has_branch_stack(event))
+			data.br_stack = &cpuc->lbr_stack;
+
+		if (perf_event_overflow(event, &data, regs))
+			x86_pmu_stop(event, 0);
+	}
+
+	return handled;
+}
+```
+
+
+
+```bash
+Tips:
+		Intel Processor Trace（PT）是Intel在其第五代 CPU 之后引入的一个硬件部件。该硬件部件的作用是记录程序执行中的分支信息，从而帮		助构建程序运行过程中的控制流图。在默认情况下 CPU 的 PT 部件是处于关闭状态，这意味着 CPU 不会记录程序的分支信息，因此也不会产生		任何开销。通过写 MSR 寄存器可以打开 PT 开关。在打开 PT 开关后，CPU开始记录分支指令信息，所记录的信息以压缩数据包的形式存储在内		 存中
+```
+
+
+
+硬件相关的机制我们可能不是很熟悉，但是 perf 采集的数据上报给用户的过程，这总得看一看呗。在针对 overflow bit 的处理逻辑末尾，都会调用 `perf_event_overflow` 函数，看到这个名字也不难猜出意思：perf 溢出事件。来看其核心处理逻辑。
+
+
+
+`__perf_event_overflow ` 主要逻辑很简单，调用 event->overflow_handler，而这个 event 又是什么呢？这个 overflow_handler 在哪里设置的呢？嘿嘿，**`sys_perf_event_open`** 系统调用！
+
+```c
+static int __perf_event_overflow(struct perf_event *event,
+				   int throttle, struct perf_sample_data *data,
+				   struct pt_regs *regs)
+{
+	// 准备工作 ...
+
+  // 调用 overflow_handler
+	READ_ONCE(event->overflow_handler)(event, data, regs);
+
+  // fasync 同步刷新，如果没有成功，需要提交到 work_queue 中 
+	if (*perf_event_fasync(event) && event->pending_kill) {
+		event->pending_wakeup = 1;
+		irq_work_queue(&event->pending);
+	}
+
+	return ret;
+}
+```
+
+
+
+深挖了这么多层，终于找到了和 perf 相关的系统调用了！在 perf_event_open 系统调用中，会通过 `perf_event_alloc` 分配一个 `perf event` 结构，并且设置对应的 overflow_handler，闭环啦！
+
+```c
+perf_event_alloc(...){
+  ...
+  if (overflow_handler) {
+		event->overflow_handler	= overflow_handler;
+		event->overflow_handler_context = context;
+	} else if (is_write_backward(event)){
+		event->overflow_handler = perf_event_output_backward;
+		event->overflow_handler_context = NULL;
+	} else {
+		event->overflow_handler = perf_event_output_forward;
+		event->overflow_handler_context = NULL;
+	}  
+  ...
+}
+```
+
+
+
+Hold on，事情还没有结束，我们现在已经自底向上捋了一下 perf PMU 事件的调用流程，还需自上而下来总览一下整个 perf event 的实现原理。
+
+
+
+## 3. perf_event_open 系统调用
+
+
+
+Todo!()
 
