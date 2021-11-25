@@ -200,35 +200,13 @@ Tips:
 
 
 
-### 2.2 then ?
+这里需要特别提到一点，在 ftrace 最早期的设计中，并没有用到 fentry 这个 trampoline，而是 mcount
 
 
 
-Ok，那我们只需要针对这个 `__fentry__` 函数做一些 hack 操作，就大功告成？非也非也，还早着呢？
+有读者可能会疑惑了，hold on! 到底说的是 mcount 还是 fentry ？现在究竟用的是什么版本？
 
-如果每一个函数开头，都需要进行这个额外的操作，开销累积起来是相当可观的。据统计显示，仅仅在 `__fentry__` 中使用 retq，就会增加 13% 的开销，显然无法接收！
-
-因此内核开发者想要某种方式，零成本完成这件事。也就有下面几个目标：
-
-1. 在启动内核的时候，将所有的 `call __fentry__` 转换成 `nop` 指令；
-2. 需要确定所有 `__fentry__` 的位置，最好能在编译期间完成这件事
-
-
-
-```
-Tips:
-		所谓的零成本，其实在 rust 和 cpp 中都有展现，其含义是：如果你不需要这个功能，那么你不需要为其发出代价，如果你使用了它，那么你不可能比语言本身提供的机制做得更好！
-```
-
-
-
-### 2.3 recordmcount
-
-
-
-hold on! 到底说的是 mcount 还是 fentry ？这一点其实对于我们而言并不是很重要，但还是很有必要说明一下其中的缘由：
-
-你几乎可以将 mcount 和 fentry 理解成一样的机制，mcount是最原先的版本，fentry是改进版。它们的区别在于，mcount 无法记录函数参数，反映到函数上就是，每次调用 mcount 之前，都需要将寄存器中的内容保存到堆栈上，如下所示
+mcount 和 fentry 本质上都是一段 trampoline ，它们的区别在于，但是 mcount 需要 frame pointer，也就需要再 frame setup 之后才能调用 mcount，熟悉汇编的同学会明白，frame point 是一个相当大的开销，需要很多寄存器入栈的操作，overhead 不可小视
 
 ```asm
 <posix_cpu_timer_set>:
@@ -245,7 +223,9 @@ hold on! 到底说的是 mcount 还是 fentry ？这一点其实对于我们而�
      49 89 ff 			 mov %rdi,%r15 
 ```
 
-fentry 则不需要这个操作，直接调用 fentry 就好了。这样对比下来，如果要像之前那样动态修改 mcount 为 nop，这些寄存器压栈的开销仍不可避免，fentry 则由编译器为我们保证了这一点。因此，在 gcc 4.6 引入了 fentry 之后，就将 mcount 升级为 fentry 了，只需要用到 `gcc -pg -mfentry` 的编译选项即可。
+
+
+fentry 则不依赖于 frame pointer，直接在函数开头调用 fentry 即可。因此，在 gcc 4.6 引入了 fentry 之后，就将 mcount 升级为 fentry 了，只需要用到 `gcc -pg -mfentry` 的编译选项即可（ **fentry 目前仅支持 x86 架构**）。
 
 ```asm
 <posix_cpu_timer_set>:
@@ -260,9 +240,49 @@ fentry 则不需要这个操作，直接调用 fentry 就好了。这样对比�
      53 						 push %rbx
 ```
 
+fentry 还有一个很大的好处，那就是几乎所有的函数首部调用 fentry 的逻辑都是相同的，没有差异，**KISS**，**beautiful**
 
 
-接下来鉴于
+
+### 2.2 overhead
+
+
+
+如果内核每一个非 inline 的函数开头，都需要进行 fentry 这个额外的操作，开销累积起来是相当可观的。据统计显示，仅仅在 `__fentry__` 中使用 retq（没有任何多于的操作），就会增加 13% 的开销，显然无法接受！
+
+因此内核开发者想要某种方式，零成本完成这件事。也就有下面几个目标：
+
+1. 在启动内核的时候，将所有的 `call __fentry__` 转换成 `nop` 指令；
+2. 需要确定所有 `__fentry__` 的位置，最好能在编译期间完成这件事
+
+
+
+```
+Tips:
+		所谓的零成本，其实在 rust 和 cpp 中都有展现，其含义是：如果你不需要这个功能，那么你不需要为其发出代价，如果你使用了它，那么你不		 可能比语言本身提供的机制做得更好！
+```
+
+
+
+实际上想要在编译期完成所有 fentry 的定义，并不是一件容易的事情，但我们可以在内核的编译 suite 当中加上这样一个步骤：统计所有的 fentry。
+
+通过 scripts/recordmcount.c 这个文件 （fentry 仍然沿用了mcount 的一些命名，比如下面的），可以完成下面几件事：
+
+1. 读取所有的二进制 object 文件
+2. 读取所有的 relocation table，并且：
+   - 找出所有函数中的 `__fentry__` 
+   - 创建一个 table
+   - 将这个 table 链接回该二进制文件中，添加一个新的 section，叫做 `__mcount_loc`
+
+
+
+注意，上面这个操作完成之后，我们只是确定了每一个 object 文件中的 fentry 位置，并且保存到了 `__mcount_loc` section 当中，当 Linux 链接所有这些 object 文件的时候，还会通过一些神奇的魔法，将它们聚合到一起，形成一个巨大的数组，数组中每一项的内容，都是对应 fentry 的位置。
+
+接下来只需要遍历这个 fentry 数组，将所有对应位置修改为 nop，Done！
+
+
+
+
 
 
 
