@@ -3,3 +3,6 @@ codeblock:
   prismjs:
     light: default
     dark: tomorrow
+
+reward:
+  enable: false
