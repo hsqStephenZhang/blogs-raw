@@ -24,7 +24,11 @@ ftrace，顾名思义，就是 `function trace`，针对函数级别的追踪调
 
 
 
-可以通过 tracefs 和内核进行交互，比如向 current_tracer 文件中写入 `function`，内核就会追踪所有的函数调用
+### 1.1 如何使用 ftrace
+
+
+
+可以通过 tracefs **和内核进行交互**，比如向 current_tracer 文件中写入 `function`，内核就会追踪所有的函数调用
 
 ```bash
 $ cd /sys/kernel/debug/tracing
@@ -89,11 +93,11 @@ $ cat trace
 
 
 
-如果通过 `echo '*schedule*' > set_ftrace_filter`  来设置过滤器，就会发现， `cat trace` 得到的结果中，果真就是我们想要留下来的满足 `*schedule*` 这个 pattern 的函数。
+如果通过 `echo '*schedule*' > set_ftrace_filter`  来设置过滤器，就会发现， `cat trace` 得到的结果中，果真就是我们想要留下来的满足 `*schedule*` 这个命名规则的函数。
 
 
 
-那么问题来了，ftrace 究竟是如何生效的？我们真的可以为所欲为吗？接下来深入探究一下。
+那么问题来了，ftrace 究竟是如何生效的？我们真的可以为所欲为吗？我们来深入探究一下。
 
  
 
@@ -101,7 +105,15 @@ $ cat trace
 
 
 
-最根本的来说，ftrace 的实现需要基于编译器的一个功能： mcount。需要编译器在每个函数执行开始前插入一个函数，通过这种方式来 trace 每个函数的执行。
+ftrace 的目标是追踪每一个函数，肯定需要 hook 目标函数，并且执行我们自己的逻辑。思路很简单，在每个函数的入口，添加一个 trampoline。
+
+（trampoline 可以翻译为跳板，意思是，这段代码并不直接起作用，只是起到了一个间接跳转的作用）
+
+有了这个 trampoline，我们就可以通过修改 trampoline 中的指令，来跳转到 hook 代码中执行（内核代码也是需要载入内存的，理论上我们可以通过修改这段这块内存，完成各种各样的事情），那么问题来了：添加什么样的 trampoline，又如何添加呢？
+
+
+
+这里要感谢编译器提供的一个功能： mcount，即：可以在每个函数执行开始前插入一个叫 `mcount` 的函数。
 
 
 
@@ -109,7 +121,72 @@ $ cat trace
 
 
 
-要验证这一点也很容易，只需要通过 gdb 反汇编内核中的函数，就会发现，的的确确在这些函数的开头，都插入了一条 `call __fentry__` 指令！
+#### 2.1.1 用户程序验证
+
+
+
+可以通过下面这段程序来验证 mcount 的功能：
+
+```c
+// mcount.c
+#include <stdio.h>
+void  mcount()
+{        
+    printf("mcount!\n");
+}
+
+// main.c
+#include <stdlib.h>
+#include <stdio.h>
+
+extern void mcount(void);
+
+void b(int i)
+{
+        printf("b:%d\n", i);
+}
+
+int a(int i)
+{
+        b(i);
+        return 3;
+}
+
+int main()
+{
+        int i = 3;
+        int k = a(i);
+        return k;
+}
+```
+
+
+
+首先通过下面三条命令编译 mcount 和主程序 
+
+1. `gcc -c main.c -pg `
+
+2. `gcc -c mcount.c `
+
+3. `gcc mcount.o main.o -o main` 
+
+   
+
+然后执行 `./main` 执行程序，就会发现，每一个函数调用，都会输出  `mcount!`，Beego！
+
+那么这段程序是如何起作用的呢？注意到，在编译 `main.c` 的时候，我们加上了一个特殊的编译参数 `-pg`，这就是告诉编译器：请在函数首部加上 mcount 的调用，接下只需要在链接程序的过程中，提供 `mcount` 这个函数就好了，也就是第三条指令所做的事。
+
+
+
+#### 2.1.2 内核程序验证
+
+
+
+内核当中也是这么玩的吗？EXACTLY！
+
+
+
+要验证这一点也很容易，只需要通过 gdb 反汇编内核中的函数，就会发现，在这些函数的开头，的的确确都插入了一条 `call __fentry__` 指令！（PS：暂时不管 `__fentry__` 和 mcount 的区别 ）
 
 ```bash
 
@@ -170,7 +247,9 @@ End of assembler dump.
 
 
 
-也就是说，在调用 schedule 函数之前，真正执行函数本身代码前会调用 `__fentry__` 函数。`__fentry__` 函数的定义是:
+也就是说，在调用 schedule 函数的核心内容之前，都会调用 `__fentry__` 函数。
+
+`__fentry__` 函数的定义是:
 
 ```c
 #ifdef CONFIG_DYNAMIC_FTRACE
@@ -183,7 +262,7 @@ EXPORT_SYMBOL(__fentry__)
 
 
 
-这个函数没有什么特别之处，直接 `retq` 返回。但正因为有了这个额外的函数调用，让我们能完成很多相当 hack 的事情。
+可以看到，该函数没有什么特别之处，直接 `retq` 返回。但正因为有了这个额外的 trampoline，让我们能完成很多相当 hack 的事情。
 
 
 
@@ -200,13 +279,19 @@ Tips:
 
 
 
-这里需要特别提到一点，在 ftrace 最早期的设计中，并没有用到 fentry 这个 trampoline，而是 mcount
+#### 2.1.3 fentry VS  mcount
 
 
 
-有读者可能会疑惑了，hold on! 到底说的是 mcount 还是 fentry ？现在究竟用的是什么版本？
+这里来解答刚刚的一个困惑，到底说的是 mcount 还是 fentry ？现在究竟用的是什么版本？
 
-mcount 和 fentry 本质上都是一段 trampoline ，它们的区别在于，但是 mcount 需要 frame pointer，也就需要再 frame setup 之后才能调用 mcount，熟悉汇编的同学会明白，frame point 是一个相当大的开销，需要很多寄存器入栈的操作，overhead 不可小视
+
+
+在 ftrace 最早期的设计中，并没有用到 fentry 这个 trampoline，而是 mcount
+
+mcount 和 fentry 本质上都是一段跳板代码，没有特殊的意义（相信你也不会在每一个 mcount 函数中输出 "hello world"） ，它们的区别在于，mcount 需要 frame pointer，而 fentry 不需要。也就是说，需要设置好栈帧的结构之后，才能顺利调用 mcount
+
+熟悉汇编的同学会明白，frame point 是一个相当大的开销，需要很多寄存器入栈的操作，尤其是对于比较简短的函数而言。
 
 ```asm
 <posix_cpu_timer_set>:
@@ -240,7 +325,9 @@ fentry 则不依赖于 frame pointer，直接在函数开头调用 fentry 即可
      53 						 push %rbx
 ```
 
-fentry 还有一个很大的好处，那就是几乎所有的函数首部调用 fentry 的逻辑都是相同的，没有差异，**KISS**，**beautiful**
+
+
+fentry 还有一个很大的好处，那就是几乎所有的函数首部调用 fentry 的逻辑都是相同的，没有差异，**Simple, Stupid, beautiful**
 
 
 
@@ -248,9 +335,13 @@ fentry 还有一个很大的好处，那就是几乎所有的函数首部调用 
 
 
 
-如果内核每一个非 inline 的函数开头，都需要进行 fentry 这个额外的操作，开销累积起来是相当可观的。据统计显示，仅仅在 `__fentry__` 中使用 retq（没有任何多于的操作），就会增加 13% 的开销，显然无法接受！
+始终铭记一点：**计算机世界没有银弹！**
 
-因此内核开发者想要某种方式，零成本完成这件事。也就有下面几个目标：
+
+
+如果内核每一个函数开头都加上 fentry 这个额外的操作，这个开销累积起来是相当可观的。据统计显示，仅仅在 `__fentry__` 中使用 retq（没有任何多于的操作），就会增加 13% 的开销，显然无法接受！
+
+因此内核开发者想要某种方式，以近乎零成本的方式来完成这件事。也就有下面几个目标：
 
 1. 在启动内核的时候，将所有的 `call __fentry__` 转换成 `nop` 指令；
 2. 需要确定所有 `__fentry__` 的位置，最好能在编译期间完成这件事
@@ -259,12 +350,12 @@ fentry 还有一个很大的好处，那就是几乎所有的函数首部调用 
 
 ```
 Tips:
-		所谓的零成本，其实在 rust 和 cpp 中都有展现，其含义是：如果你不需要这个功能，那么你不需要为其发出代价，如果你使用了它，那么你不		 可能比语言本身提供的机制做得更好！
+		所谓的零成本，其实在 rust 和 cpp 中都有展现，其含义是：如果你不需要这个功能，那么你不需要为其发出代价，如果你使用了它，那么你不可能比语言本身提供的机制做得更好！
 ```
 
 
 
-实际上想要在编译期完成所有 fentry 的定义，并不是一件容易的事情，但我们可以在内核的编译 suite 当中加上这样一个步骤：统计所有的 fentry。
+实际上想要在编译期完成所有 fentry 的定义，并不是一件容易的事情，但我们可以在内核的 MakeFile 当中加上这样一个步骤：统计所有的 fentry，并修改二进制文件内容。
 
 通过 scripts/recordmcount.c 这个文件 （fentry 仍然沿用了mcount 的一些命名，比如下面的），可以完成下面几件事：
 
