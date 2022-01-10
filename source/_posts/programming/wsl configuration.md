@@ -48,7 +48,7 @@ pacman -Syy
 ### 2.3 安装常用开发软件
 
 ```bash
-pacman -yS zsh which wget curl git aria2 bison flex texinfo gperf libtool patchutils bc zlib expat vi vim neovim rsync fd exa ripgrep tree cloc man python2 # 基本软件
+pacman -yS openssh zsh which wget curl git aria2 bison flex texinfo gperf libtool patchutils bc zlib expat vi vim neovim rsync fd exa ripgrep tree cloc man python2 # 基本软件
 pacman -yS clang llvm gdb clang-format cmake make ccls # 编译必备
 pacman -yS ltrace libelf libbcc strace pahole bpftrace perf netmap trace-cmd liburing base-devel devtools # 开发必备
 ```
@@ -156,6 +156,32 @@ registry = "https://mirrors.sjtug.sjtu.edu.cn/git/crates.io-index"
 # rustcc社区
 [source.rustcc]
 registry = "git://crates.rustcc.cn/crates.io-index"
+```
+
+### 2.8 git 配置
+
+配置用户名和邮箱
+
+修改配置文件 `~/.gitconfig`，或者通过 `git config --global` 来设置 email,name 等属性，甚至可以设置 git 镜像网站，用来加速项目下载，比如在 `~/.gitconfig` 添加下面这条配置
+
+```bash
+[url "https://hub.fastgit.org"]
+    insteadOf = https://github.com
+```
+
+</br></br>
+
+配置 ssh 密钥
+
+通过下面这条命令，创建 ssh 的密钥，并且上传到 github，gitee，gitlab 等 git 托管网站中
+`ssh-keygen -t rsa -m PEM -b 4096 -C "email"`
+
+如果取的名字比较特殊（因为 git 会默认查找一些特殊命名的密钥文件），需要在 `~/.ssh/config` 当中指明，针对某一个 host，到底用的是哪个配置文件
+
+```bash
+Host github.com
+  HostName github.com
+  IdentityFile ~/.ssh/id_rsa_xxx
 ```
 
 ## 3. WSL 管理
