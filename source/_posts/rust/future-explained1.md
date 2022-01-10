@@ -1,7 +1,7 @@
 ---
 title: future explained(1)
 date: 2021-11-24 14:01:29
-categories: future
+categories: "rust future"
 ---
 
 
