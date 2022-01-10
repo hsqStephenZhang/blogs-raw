@@ -1,5 +1,7 @@
 ---
 title: how perf works
+categories: trace
+date: 2022-1-9 13:47:40
 ---
 
 

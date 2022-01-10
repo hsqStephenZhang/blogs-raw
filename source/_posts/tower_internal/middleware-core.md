@@ -1,5 +1,7 @@
 ---
 title: tower 中间件模型
+categories: tower
+date: 2022-1-10 13:47:40
 ---
 
 ## 1. 洋葱圈模型

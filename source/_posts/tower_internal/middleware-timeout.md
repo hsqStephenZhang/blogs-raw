@@ -1,5 +1,7 @@
 ---
 title: tower-timeout limit
+categories: tower
+date: 2022-1-10 13:47:40
 ---
 
 Timeout 这个中间件的责任也非常明确：如果某个服务调用时间过长，超出了规定的超时时间，直接返回错误

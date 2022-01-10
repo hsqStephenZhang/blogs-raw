@@ -1,5 +1,7 @@
 ---
 title: tower-concurrency limit
+categories: tower
+date: 2022-1-10 13:47:40
 ---
 
 `Concurrency` 翻译过来是 `并发`，`Concurrency Limit` 也就是 `并发控制`，其核心限制条件是：**同一时刻最多接收 n 个请求**，和 RateLimit 有一定的相似之处，内层似乎都要使用一个计数器计数，但是具体如何实现，又有很大的不同。

@@ -1,5 +1,7 @@
 ---
 title: tower 不足之处
+categories: tower
+date: 2022-1-10 13:47:40
 ---
 
 这一部分，主要是探讨 Tower 中的一些不足之处，以及我们团队在使用 Tower 之后的一些体验。

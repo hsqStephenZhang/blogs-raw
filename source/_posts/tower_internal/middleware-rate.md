@@ -1,5 +1,7 @@
 ---
 title: tower-rate limit
+categories: tower
+date: 2022-1-10 13:47:40
 ---
 
 Tower 自带的流量控制中间件，核心功能为：**在 x 时间内，最多接收 n 个请求，如果超出最大流量，休眠直到下一个刷新点**

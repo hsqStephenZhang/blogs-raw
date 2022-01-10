@@ -1,6 +1,7 @@
 ---
 title: future explained(0) 
 date: 2021-11-24 14:01:29
+categories: future
 ---
 
 

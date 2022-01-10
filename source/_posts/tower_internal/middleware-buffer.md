@@ -1,5 +1,7 @@
 ---
 title: tower-buffer
+categories: tower
+date: 2022-1-10 13:47:40
 ---
 
 不知道大家有没有发现，Tower Service trait 中，要求 `ready + call` 都接收一个 `&mut self`，这也就意味着，我们无法将其很好地扩展到多线程上！

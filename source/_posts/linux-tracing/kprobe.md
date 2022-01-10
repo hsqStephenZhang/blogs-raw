@@ -1,5 +1,7 @@
 ---
 title: kprobe
+categories: trace
+date: 2022-1-9 13:47:40
 ---
 
 ## 1. kprobe 是什么
