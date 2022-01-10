@@ -1,6 +1,6 @@
 ---
-title: tower-rate limit
-categories: tower
+title: 2.2 tower-rate limit
+categories: [tower, "2.middleware"]
 date: 2022-1-10 13:47:40
 ---
 

@@ -1,6 +1,6 @@
 ---
-title: tower-concurrency limit
-categories: tower
+title: 2.4 tower-concurrency limit
+categories: [tower, "2.middleware"]
 date: 2022-1-10 13:47:40
 ---
 

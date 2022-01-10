@@ -1,6 +1,6 @@
 ---
-title: tower-buffer
-categories: tower
+title: 2.5 middleware-buffer
+categories: [tower, "2.middleware"]
 date: 2022-1-10 13:47:40
 ---
 
