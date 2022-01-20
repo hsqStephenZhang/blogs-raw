@@ -253,4 +253,3 @@ static const struct pid_entry tid_base_stuff[] = {
 ```
 
 相信聪明的你们已经可以举一反三了，如果是 `REG` 宏表示的 regular file，设定好 file_operations 之后，就可以通过 seq_file 接口和 `open/read` 等系统调用交互了，如果是 `DIR` 宏表示的 directory file，还需要提供新的 inode_operations，如果下一级还有目录，再提供一个 inode_operations 即可 ......
-
