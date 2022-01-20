@@ -68,7 +68,7 @@ module_exit(hello_cleanup);
 
 ```c
 // include/linux/init.h
-#define __init		__section(".init.text") __cold  __latent_entropy __noinitretpoline
+#define __init  __section(".init.text") __cold  __latent_entropy __noinitretpoline
 ```
 
 `__initcall` 定义在 `include/linux/init.h` 文件中，从下往上查找，最终发现，也是定义了符号所处的 section
@@ -77,13 +77,13 @@ module_exit(hello_cleanup);
 // include/linux/init.h
 
 #define ___define_initcall(fn, id, __sec) \
-	static initcall_t __initcall_##fn##id __used \
-		__attribute__((__section__(#__sec ".init"))) = fn;
+ static initcall_t __initcall_##fn##id __used \
+  __attribute__((__section__(#__sec ".init"))) = fn;
 #endif
 
 #define __define_initcall(fn, id) ___define_initcall(fn, id, .initcall##id)
 
-#define device_initcall(fn)		__define_initcall(fn, 6)
+#define device_initcall(fn)  __define_initcall(fn, 6)
 
 #define __initcall(fn) device_initcall(fn)
 ```
@@ -91,29 +91,30 @@ module_exit(hello_cleanup);
 如果将上面的宏代入 `__initcall(io_uring_init)` 并展开之后，其实相当于
 `static initcall_t __initcall_io_uring_init6 __attribute__((__used__)) __attribute__((__section__(".initcall6.init"))) = io_uring_init;`
 
-这行代码的意思是：声明一个类型为` initcall_t` 的函数指针 `__initcall_io_uring_init6`，并且将其放在 '.initcall6.init' 段中，并且函数指针指向 io_uring_init 这个初始化函数。同时，`__used__` 这个声明，会告诉编译器：保留这个符号，不要因为当前没有使用这个符号，而直接优化
+这行代码的意思是：声明一个类型为`initcall_t` 的函数指针 `__initcall_io_uring_init6`，并且将其放在 '.initcall6.init' 段中，并且函数指针指向 io_uring_init 这个初始化函数。同时，`__used__` 这个声明，会告诉编译器：保留这个符号，不要因为当前没有使用这个符号，而直接优化
 
 其实，`init.h` 文件中还定义了很多别的类似的宏，比如：
 
 ```c
-#define pure_initcall(fn)		__define_initcall(fn, 0)
+#define pure_initcall(fn)  __define_initcall(fn, 0)
 
-#define core_initcall(fn)		__define_initcall(fn, 1)
-#define core_initcall_sync(fn)		__define_initcall(fn, 1s)
-#define postcore_initcall(fn)		__define_initcall(fn, 2)
-#define postcore_initcall_sync(fn)	__define_initcall(fn, 2s)
-#define arch_initcall(fn)		__define_initcall(fn, 3)
-#define arch_initcall_sync(fn)		__define_initcall(fn, 3s)
-#define subsys_initcall(fn)		__define_initcall(fn, 4)
-#define subsys_initcall_sync(fn)	__define_initcall(fn, 4s)
-#define fs_initcall(fn)			__define_initcall(fn, 5)
-#define fs_initcall_sync(fn)		__define_initcall(fn, 5s)
-#define rootfs_initcall(fn)		__define_initcall(fn, rootfs)
-#define device_initcall(fn)		__define_initcall(fn, 6)
-#define device_initcall_sync(fn)	__define_initcall(fn, 6s)
-#define late_initcall(fn)		__define_initcall(fn, 7)
-#define late_initcall_sync(fn)		__define_initcall(fn, 7s)
+#define core_initcall(fn)  __define_initcall(fn, 1)
+#define core_initcall_sync(fn)  __define_initcall(fn, 1s)
+#define postcore_initcall(fn)  __define_initcall(fn, 2)
+#define postcore_initcall_sync(fn) __define_initcall(fn, 2s)
+#define arch_initcall(fn)  __define_initcall(fn, 3)
+#define arch_initcall_sync(fn)  __define_initcall(fn, 3s)
+#define subsys_initcall(fn)  __define_initcall(fn, 4)
+#define subsys_initcall_sync(fn) __define_initcall(fn, 4s)
+#define fs_initcall(fn)   __define_initcall(fn, 5)
+#define fs_initcall_sync(fn)  __define_initcall(fn, 5s)
+#define rootfs_initcall(fn)  __define_initcall(fn, rootfs)
+#define device_initcall(fn)  __define_initcall(fn, 6)
+#define device_initcall_sync(fn) __define_initcall(fn, 6s)
+#define late_initcall(fn)  __define_initcall(fn, 7)
+#define late_initcall_sync(fn)  __define_initcall(fn, 7s)
 ```
+
 这里 `__define_initcall(fn, 0)` 中的数字作用，先按下不表，后续会揭露
 
 而内核模块必不可少的 `module_init` 就相当于 `__initcall`，同样是定义了一个位于 '.initcall6.init' section 的函数指针
@@ -132,36 +133,36 @@ Soga，原来所谓的 `__initcall` `module_init`，只不过是将创建一个�
 
 ```text
 start_kernel  
-	-> rest_init();
-		-> kernel_thread(kernel_init, NULL, CLONE_FS);
-			-> kernel_init()
-				-> kernel_init_freeable();
-					-> do_basic_setup();
-						-> do_initcalls();  
+ -> rest_init();
+  -> kernel_thread(kernel_init, NULL, CLONE_FS);
+   -> kernel_init()
+    -> kernel_init_freeable();
+     -> do_basic_setup();
+      -> do_initcalls();  
 ```
 
 `do_initcalls` 大致的作用是，遍历 0-initcall_levels，并且依次调用对应 level 的 do_initcall_level 函数
 
 ```c
 static initcall_t *initcall_levels[] __initdata = {
-	__initcall0_start,
-	__initcall1_start,
-	__initcall2_start,
-	__initcall3_start,
-	__initcall4_start,
-	__initcall5_start,
-	__initcall6_start,
-	__initcall7_start,
-	__initcall_end,
+ __initcall0_start,
+ __initcall1_start,
+ __initcall2_start,
+ __initcall3_start,
+ __initcall4_start,
+ __initcall5_start,
+ __initcall6_start,
+ __initcall7_start,
+ __initcall_end,
 };
 
 static void __init do_initcalls(void)
 {
-	// ...
-	for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++) {
-		strcpy(command_line, saved_command_line);
-		do_initcall_level(level, command_line);
-	}
+ // ...
+ for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++) {
+  strcpy(command_line, saved_command_line);
+  do_initcall_level(level, command_line);
+ }
     // ...
 }
 ```
@@ -172,12 +173,12 @@ static void __init do_initcalls(void)
 
 接下来的 `do_initcall_level` 所做的事情是：依次调用 `[initcall_levels[level],initcall_levels[level+1])` 范围内的每一个函数指针，按照我们的理解，自然是应该调用我们之前通过 `__initcall` `module_init` 定义的函数指针才对。
 
-```
+```c
 static void __init do_initcall_level(int level, char *command_line)
 {
     // ...
-	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
-		do_one_initcall(initcall_from_entry(fn));
+ for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
+  do_one_initcall(initcall_from_entry(fn));
 }
 ```
 
@@ -185,10 +186,10 @@ static void __init do_initcall_level(int level, char *command_line)
 
 ```c
 // include/asm-generic/vmlinux.lds.h
-#define INIT_CALLS_LEVEL(level)						\
-		__initcall##level##_start = .;				\
-		KEEP(*(.initcall##level##.init))			\
-		KEEP(*(.initcall##level##s.init))			\
+#define INIT_CALLS_LEVEL(level)      \
+  __initcall##level##_start = .;    \
+  KEEP(*(.initcall##level##.init))   \
+  KEEP(*(.initcall##level##s.init))   \
 ```
 
 不过需要注意的文件名，`vmlinux.lds.h`，发现只有在 `vmlinux.lds.S` 中才被 include 进来，这是因为，`INIT_CALLS_LEVEL`，并不是作用于 C语言编译过程中，而是在 linker 链接的过程中发挥其**魔法**。
@@ -199,28 +200,28 @@ static void __init do_initcall_level(int level, char *command_line)
 
 ```c
 // include/asm-generic/vmlinux.lds.h
-#define INIT_CALLS							\
-		__initcall_start = .;					\
-		KEEP(*(.initcallearly.init))				\
-		INIT_CALLS_LEVEL(0)					\
-		INIT_CALLS_LEVEL(1)					\
-		INIT_CALLS_LEVEL(2)					\
-		INIT_CALLS_LEVEL(3)					\
-		INIT_CALLS_LEVEL(4)					\
-		INIT_CALLS_LEVEL(5)					\
-		INIT_CALLS_LEVEL(rootfs)				\
-		INIT_CALLS_LEVEL(6)					\
-		INIT_CALLS_LEVEL(7)					\
-		__initcall_end = .;
+#define INIT_CALLS       \
+  __initcall_start = .;     \
+  KEEP(*(.initcallearly.init))    \
+  INIT_CALLS_LEVEL(0)     \
+  INIT_CALLS_LEVEL(1)     \
+  INIT_CALLS_LEVEL(2)     \
+  INIT_CALLS_LEVEL(3)     \
+  INIT_CALLS_LEVEL(4)     \
+  INIT_CALLS_LEVEL(5)     \
+  INIT_CALLS_LEVEL(rootfs)    \
+  INIT_CALLS_LEVEL(6)     \
+  INIT_CALLS_LEVEL(7)     \
+  __initcall_end = .;
 
-#define INIT_DATA_SECTION(initsetup_align)				\
-	.init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {		\
-		INIT_DATA						\
-		INIT_SETUP(initsetup_align)				\
-		INIT_CALLS						\
-		CON_INITCALL						\
-		INIT_RAM_FS						\
-	}
+#define INIT_DATA_SECTION(initsetup_align)    \
+ .init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {  \
+  INIT_DATA      \
+  INIT_SETUP(initsetup_align)    \
+  INIT_CALLS      \
+  CON_INITCALL      \
+  INIT_RAM_FS      \
+ }
 ```
 
 ```asm
@@ -237,11 +238,11 @@ INIT_DATA_SECTION(16)
 
 ```bash
 sys_init_module
-	-> load_module
-		-> ...
-		-> do_init_module
-			-> do_mod_ctors
-			-> do_one_initcall(mod->init)
+ -> load_module
+  -> ...
+  -> do_init_module
+   -> do_mod_ctors
+   -> do_one_initcall(mod->init)
 ```
 
 加载一个模块的时候，需要调用 init_module 这个系统调用，提供模块的信息(umod)，以及一些参数(uargs)，在完成了一系列检查，重定位等操作之后，直接调用 `mod->init` 这个初始化函数
