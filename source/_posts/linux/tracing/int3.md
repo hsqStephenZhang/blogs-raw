@@ -1,6 +1,6 @@
 ---
 title: int3 黑魔法
-categories: trace
+categories: [linux, trace]
 date: 2022-1-9 13:47:40
 ---
 

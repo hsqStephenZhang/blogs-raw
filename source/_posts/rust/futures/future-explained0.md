@@ -1,14 +1,8 @@
 ---
 title: future explained(0) 
 date: 2021-11-24 14:01:29
-categories: "rust future"
+categories: [rust, async]
 ---
-
-
-
-# Future explained(0)  -- state machine 原理
-
-
 
 generator（生成器）是 Rust 中 async/await 的基础，state machine 又是生成器的基础。
 
@@ -18,11 +12,7 @@ generator（生成器）是 Rust 中 async/await 的基础，state machine 又�
 
 其实不仅仅是 Rust，LLVM 作为一个广泛使用的后端，也支持了 yield 语法（因此 c++ 最新版本也可以实现 stackless 协程了）。接下来我们就分别探究一下二者实现的思路，以求对于 async/await 有一个更加深入的认识。
 
-
-
 ## 1. LLVM 实现
-
-
 
 首先来看 LLVM 支持的方式：通过 `generator + yield` 两个关键字，可以将原先的一个普通函数，改写为生成器。
 
@@ -46,6 +36,7 @@ int main()
 ```
 
 我们希望的执行流是：
+
 1. 下一次重新执行该 generator，可以从上一次 yield 点开始执行
 2. 可以保存栈的上下文
 
@@ -57,18 +48,12 @@ int main()
    - 为了从 yield 下一条指令开始执行，肯定需要保存该指令的地址；
    - 为了保证栈帧中的局部变量不会失效，一定要将其保存存在调用栈之外的某个结构中（其实就是闭包）
 
-
-
 实际上 LLVM 正是这样做的，通过 context 保存下一次 resume 需要跳转执行的位置，以及调用栈中的局部变量。每次调用这个 generator，都需要从外部传入相应的 context 上下文变量，将某些局部变量的读写都映射为针对 context 中相应字段的读写。
-
-
 
 ```
 Tips:
-		上下文变量还需要一个特殊的 setup 函数来处理，每一个 generator 都唯一对应 context，从而保证状态的确定性。
+  上下文变量还需要一个特殊的 setup 函数来处理，每一个 generator 都唯一对应 context，从而保证状态的确定性。
 ```
-
-
 
 来简单看一下 LLVM 生成的 IR，围绕着 context 这个最关键的**Generator 状态**展开，关键位置都做了标记。
 
@@ -157,27 +142,15 @@ define void @main() nounwind {
 }
 ```
 
-
-
 上面的 generator 中，实际上没有保存什么局部变量，但是如果 generator 中存在跨越 yield 的局部变量，就需要将这些内容保存到 context 的某个字段中，这里不过多演示。
-
-
 
 ## 2. Rust 实现
 
-
-
 虽然 Rust 底层依赖于 LLVM，LLVM 也提供了 generator 的能力，但 Rust 单独实现了一套类似的 generator。实际上 generator 也不算太难，简单来说，等同于一个闭包，只不过这个闭包不是一次性执行完成，而是分为多个阶段，每一个阶段都会对应一个状态，状态之间会进行转移。That's all！
-
-
 
 下面主要会借助 Generator 和 Yield，探讨一下**目前** async/await 实现的底层原理。
 
-
-
 ### 2.1 Yield & Generator
-
-
 
 首先来看一个 yield 关键字的 demo。
 
@@ -200,8 +173,6 @@ fn main() {
 }
 ```
 
-
-
 之所以用闭包实现，按照 LLVM 的实现机制以及上面的一小段简介，不难推断出原因：没错，需要保存上下文状态信息！那么，现在最重要的问题就是，这个上下文究竟是怎么保存的？编译器在背后究竟做了什么**黑魔法**？
 
 就像 `Future` 的核心是 `Future trait`，`Generator` 的核心是 `Generator trait`，我们先来看一下这几个 trait 的定义。
@@ -223,14 +194,10 @@ pub trait Generator<R = ()> {
 }
 ```
 
-
-
 简单和 `Future trait` 进行一下对比:
 
 1. Future只有一个类型参数 Output，表示最终返回的结果，Poll 其实就相当于 Option；Generator 有两个类型参数 Yield 和 Return，可以在返回零次或多次 Yield 后最终返回Return，GeneratorState 其实就相当于 Result;
 2. Future 的 poll 中有一个额外参数 ctx，一般是用来注册回调的；Generator 的 resume 中有一个额外参数 arg，也就是每次进入的时候都可以传一个参数，默认为 `()`，我理解是赋予了这个 Generator 扩展的能力。
-
-
 
 `Generator trait` 在 99% 的情况下，不需要我们手动实现，而是编译器帮助我们生成：
 
@@ -239,7 +206,6 @@ pub trait Generator<R = ()> {
 用一个 enum 保存每一个代码块执行中的状态，每次 yield 或者 return 之前，会将这段子代码块中的所有指令**全部**执行完成，然后修改 enum 中保存的状态，也就是**状态转移**，以及上下文中的局部变量，也都被捕获进来。
 
 每一次 resume，其实就是需要匹配 enum 中的状态，去执行对应部分的代码，最后修改状态，是状态转移，直到返回 Complete。
-
 
 按照这种思路，可以将上面 main 函数的闭包，翻译为下面的结构。
 
@@ -290,24 +256,16 @@ fn main() {
 }
 ```
 
-
-
-`enum __Generator`   就是生成的匿名结构，编译器会为其实现  Generate trait，就是上面分析所说的状态机核心逻辑。 
+`enum __Generator`   就是生成的匿名结构，编译器会为其实现  Generate trait，就是上面分析所说的状态机核心逻辑。
 
 总的来说，就是通过 **闭包 + 状态机**，实现了整个 Generator。
 
-
-
 有了 Generator 的基础，再去看 async/await 的实现，就会轻松不少。我们只需要去关心，究竟是如何将 async/await 转换成闭包，并且用 **状态匹配 + 状态转移** 的方式去驱动执行。
-
-
 
 ```
 Tips:
-		需要提示一点，generator 在 Rust 中仍然是实验性的功能，只不过目前的 async/await 底层是借助了这一点来实现，未来不保证会不会修		改为别的方案，因为自引用结构的确有一些 annoying
+  需要提示一点，generator 在 Rust 中仍然是实验性的功能，只不过目前的 async/await 底层是借助了这一点来实现，未来不保证会不会修  改为别的方案，因为自引用结构的确有一些 annoying
 ```
-
-
 
 ### 2.2 HIR & MIR
 
@@ -317,14 +275,12 @@ Rust 针对 async/await 的处理，主要分为 HIR 和 MIR 两个阶段。
 Tips:
     Rust 面向 LLVM 编程，但是 rustc 编译器也做了非常多的优化，将其划分为 HIR，MIR 
     
-    1. HIR. 全称是 "high-level (H) intermediate representation (IR)"，可以将其理解为 AST 的另一中表示方式，主要是将语法糖		做了转换。
+    1. HIR. 全称是 "high-level (H) intermediate representation (IR)"，可以将其理解为 AST 的另一中表示方式，主要是将语法糖  做了转换。
 
-    2. MIR. The "mid-level (M) intermediate representation (IR)"。HIR 的简化版本，将高级的表达形式，转换成更加低级的结			构。rust 中的生命周期在这里会被抹除。
+    2. MIR. The "mid-level (M) intermediate representation (IR)"。HIR 的简化版本，将高级的表达形式，转换成更加低级的结   构。rust 中的生命周期在这里会被抹除。
 
-    3. LIR. Rust 中相当于 LLVM-IR。"low-level (L) intermediate representation (IR)" 是一种非常接近机器码的表示方式，会		对 MIR 做进一步的精简。
+    3. LIR. Rust 中相当于 LLVM-IR。"low-level (L) intermediate representation (IR)" 是一种非常接近机器码的表示方式，会  对 MIR 做进一步的精简。
 ```
-
-
 
 #### 2.2.1 HIR
 
@@ -354,8 +310,6 @@ match <expr> {
     }
 }
 ```
-
-
 
 也就是说，会将 async 代码块翻译为 `from_generator` 生成的匿名结构体，这个结构体由编译器实现 Future trait。
 
@@ -390,15 +344,8 @@ pub fn from_generator<T: Generator<Yield = ()>>(x: T) -> impl Future<Output = T:
 
 到这一步为止，HIR 对于 async 代码块的处理就完成了，接下来是最重要的 MIR 处理。
 
-
-
 #### 2.2.2 MIR
 
 MIR 中有一个 [transform](https://github.com/rust-lang/rust/blob/master/compiler/rustc_mir_transform/src/generator.rs) 模块专门做了这件事情。
 
 其实主要的处理逻辑我们已经看过了，就是将 yield 转换成匿名 enum，并插入多个 yield point即可。这里并不过多展开。
-
-
-
-
-

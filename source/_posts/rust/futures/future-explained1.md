@@ -1,18 +1,10 @@
 ---
 title: future explained(1)
-date: 2021-11-24 14:01:29
-categories: "rust future"
+date: 2021-11-24 14:02:29
+categories: [rust, async]
 ---
 
-
-
-# Future explained (1)  --  Future, executor, reactor 
-
-
-
 在{% post_link rust/future-explained0 上一篇文章 %}中，我们深入分析了 async/await 状态机的底层实现，接下我们就可以进一步探究，Rust 中的 Future ，以及为什么会出现 自引用结构。
-
-
 
 ## 1. Future 是什么
 
@@ -30,8 +22,6 @@ Rust 中的异步机制使用的是基于**轮询**（Poll）的方法，一个�
 
 你可能对上面的一些术语不是很清楚，接下来我会慢慢解释。
 
-
-
 ### 1.1 Executor
 
 首先，你可以大致将 executor 看成是 `future queue + poll loop`，它的任务就是不断从 future 队列中取出 future，然后执行 poll 方法。一个最简单的 executor 其实很简单，基本上等同于一个 loop 循环。但是如果想要高效地进行调度，那就需要利用到很多策略了。
@@ -45,8 +35,6 @@ loop {
 }
 ```
 
-
-
 ### 1.2 Reactor
 
 有了 executor 还不够，因为一个应用，终归是要和底层 IO 打交道的（纯计算应用勿Q），如果 executor 很高效，但是 Io 效率很低，那么 Io 就会成为应用的性能瓶颈。
@@ -58,22 +46,14 @@ loop {
 3. 异步阻塞
 4. 异步非阻塞
 
-
-
-
-
 目前各个操作系统的底层，几乎都采用了事件驱动的 IO 多路复用模型，在 Linux 上是 epoll，而在 windows 和 macOS 这种成熟的系统上，也分别有 iocp 和 kqueue。它们本质上做了这件事：当某一次操作依赖于某些资源的时候，需要向操作系统**注册**，告诉系统：等这个资源准备好之后，再来通知我，否则将我挂起。
 
 因此可以做一个跨平台的抽象：**reactor**。含义是：当事件发生的时候，对此做出反应。
 
-
-
-```
+```text
 Tips:
-		其实系统的阻塞 API 也是完成了这件事情，比如 socket 默认就是阻塞的模型，当 accept 一个 socket 的时候，整个进程都有可能陷入阻		塞状态，造成当前进程无法充分利用 CPU。但是 epoll 这种 IO 多路复用的模型，其实可以通过一个红黑树，高效地帮助我们监听多个文件描		述符，每次从内核返回，会将所有的 ready 状态的描述符都返回给用户，达到了 batch 操作的效果。
+  其实系统的阻塞 API 也是完成了这件事情，比如 socket 默认就是阻塞的模型，当 accept 一个 socket 的时候，整个进程都有可能陷入阻  塞状态，造成当前进程无法充分利用 CPU。但是 epoll 这种 IO 多路复用的模型，其实可以通过一个红黑树，高效地帮助我们监听多个文件描  述符，每次从内核返回，会将所有的 ready 状态的描述符都返回给用户，达到了 batch 操作的效果。
 ```
-
-
 
 ### 1.3 executor + reactor
 
@@ -81,15 +61,11 @@ Tips:
 
 可以想象，如果是一个既涉及 CPU 计算，也要涉及底层 IO 的 future，其实会不断地在 executor 和 reactor 之间**轮转**：需要计算时，交给 executor 执行，需要 IO 的时候，交给 reactor，由 reactor 负责事件通知，资源准备好了之后，又交给 executor 执行，循环往复，直到该 future 执行完毕。
 
-
-
 ## 2. Leaf Future VS Non-Leaf Future
 
 上面提到，future 可以区分为 `CPU/IO` 两种类型，那么反映在其创建方式上，又是什么样的呢？
 
 future 有两种实现方式，一种是手动为某一个类型实现 `Future trait`，另一种是通过 async/await 关键字创建，分别对应 Leaf-future 和 Non-leaf-future（第二小节会解释为什么这样取名）。
-
-
 
 ### 2.1 叶子 Futures
 
@@ -102,14 +78,10 @@ let mut stream = tokio::net::TcpStream::connect("127.0.0.1:3000");
 
 对 IO 资源的操作，比如对 socket 的 Read 将是非阻塞的，并返回一个 future，称之为叶子 future。之所以要求非阻塞，是因为只有这样，才能将所有权牢牢抓在用户态的 runtime 手里，否则一旦阻塞，当前进程就会被操作系统调度出去，效率就降低了。
 
-
-
-```
+```text
 Tips:
-		除非你要写一个 runtime，否则你不太可能自己实现一个叶子 Future，或者更多的是针对 Leaf-Future 的封装。
+  除非你要写一个 runtime，否则你不太可能自己实现一个叶子 Future，或者更多的是针对 Leaf-Future 的封装。
 ```
-
-
 
 ### 2.2 非叶子 Futures
 
@@ -128,16 +100,11 @@ let non_leaf = async {
 };
 ```
 
-
-
 ## 3. async 状态机
-
-
 
  [之前的文章](./state-machine.md)已经详细解释了 async/await 的实现原理，本质上是一个状态机。
 
 一个 Future 在某个时刻只会都只有唯一的状态，因此，可以用 enum 表示，为每一个可能存在的状态，都生成一个对应的 State，比如下面的 `AsyncState`，这样，我们只需要为 future 分配状态最大需要占用的内存，其余的状态下，都可以复用这块空间。理论上来说，这是最高效的模型了。
-
 
 ```rust
 async fn root_future(){
@@ -186,8 +153,6 @@ impl Future for AsyncFuture {
 }
 
 ```
-
-
 
 之前提到了 Leaf-Future 和 Non-leaf-Future，大家可能有一点困惑，为什么要这样命名？
 

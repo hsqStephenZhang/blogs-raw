@@ -1,6 +1,6 @@
 ---
 title: Linux initcall 机制
-categories: linux
+categories: [linux, basic]
 date: 2022-1-18 13:47:40
 ---
 

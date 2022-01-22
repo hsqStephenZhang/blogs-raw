@@ -1,6 +1,6 @@
 ---
 title: 2.4 tower-concurrency limit
-categories: [tower, "2.middleware"]
+categories: [rust, tower, middlewares]
 date: 2022-1-10 13:47:40
 ---
 
@@ -46,7 +46,7 @@ pub(crate) struct Semaphore {
 ```
 
 向 Semaphore 申请资源的时候，不必 one-by-one 操作，而是可以一次申请多个，Semaphore 完全看请求者申请的数量和 Semaphore 现有的资源能否匹配，如果能满足，就将这些资源返回给请求者，否则对不起，只能返回一个 Pending 状态。
-如果申请资源成功，返回一个 `OwnedSemaphorePermit` 结构，表示申请到了 `permits` 个资源，同时持有 `Arc<Semaphore>`，是需要在其 drop 时，将申请的所有 permitd 悉数返还给 Semaphore 
+如果申请资源成功，返回一个 `OwnedSemaphorePermit` 结构，表示申请到了 `permits` 个资源，同时持有 `Arc<Semaphore>`，是需要在其 drop 时，将申请的所有 permitd 悉数返还给 Semaphore
 
 但对于我们这里用到的结构来说，每接收一个请求，意味系统再能够处理的请求就少了一份，只需要分配出去一个默认的 `OwnedSemaphorePermit{ sem, permits:1 }` 的结构即可
 眼见为实：acquire_owned 函数中，通过 `ll_sem.acquire(1)` 获取了单个资源，等待该操作完成，就能返回一个许可
@@ -69,6 +69,7 @@ Semaphore 很容易创建， `semaphore: PollSemaphore::new(semaphore)` 一行�
 我们先来看一个结构 TODO!
 
 类似 RateLimit，必须要明确几个时间点：
+
 1. 在 poll_ready 函数中，如果当前已经超出并发量，需要等待 `semaphore.poll_acquire()` 返回 Poll::Ready 之后，才表明我们做好了接收请求的准备
 2. 一个请求的声明周期，在这里应该是从 `ConcurrencyLimit::call` 开始，直到内层服务 call 结果返回的 Future 得到最终结果为止，我们需要将 OwnedSemaphorePermit 和这个声明周期绑定，也就是确保开始时获取到一个 Permit，结束时返还该Permit，如何实现？
 
@@ -167,9 +168,11 @@ assert_eq!(r2, String::from("123"));
 ### ConcurrencyLimit 真正做了什么
 
 可能稍微有一点绕，但是我在试图证明当前的 ConcurrencyLimit 正确性：
+
 1. 无法同时有两个 service.call(req)，rust 的所有权机制防止了这一点，因此 `self.permit.take()` 不会 panic
 2. 真正引用中使用 service 对 req 做出响应的时候，会将 service clone 一份，移动到 async Future 中，这就要求 ConcurrencyLimit 实现了 Clone
-    - 在 ConcurrencyLimit 的 Clone 实现中，实际上每一个 clone 出去的结构，都共享了同一个底层的 Semaphore，并且会将 Option<OwnedSemaphorePermit> 结构设置为 None
+    - 在 ConcurrencyLimit 的 Clone 实现中，实际上每一个 clone 出去的结构，都共享了同一个底层的 Semaphore，并且会将 `Option<OwnedSemaphorePermit>` 结构设置为 None
+
         ```rust
         impl<T: Clone> Clone for ConcurrencyLimit<T> {
             fn clone(&self) -> Self {
@@ -181,8 +184,8 @@ assert_eq!(r2, String::from("123"));
             }
         }
         ```
-    - Clone 得到的 `ConcurrencyLimit.permit = None`，并且，每一个 Clone 得到的 Service 在真正被 call 前，而已必须要经过 poll_ready 来确认是否准备就绪，并发控制因此而来：这些共享底层信号量的任务，将一起受到 Semaphore的限制。相当于通过 tokio::spawn 提交了 x 个任务，最多只能有 n 个被执行，n 是并发限制量
 
+    - Clone 得到的 `ConcurrencyLimit.permit = None`，并且，每一个 Clone 得到的 Service 在真正被 call 前，而已必须要经过 poll_ready 来确认是否准备就绪，并发控制因此而来：这些共享底层信号量的任务，将一起受到 Semaphore的限制。相当于通过 tokio::spawn 提交了 x 个任务，最多只能有 n 个被执行，n 是并发限制量
 
 ### 收尾工作
 

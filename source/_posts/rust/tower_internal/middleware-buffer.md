@@ -1,6 +1,6 @@
 ---
 title: 2.5 middleware-buffer
-categories: [tower, "2.middleware"]
+categories: [rust, tower, middlewares]
 date: 2022-1-10 13:47:40
 ---
 
@@ -20,6 +20,7 @@ Semaphore 这个之前已经在 [ConcurrencyLimit](./middleware-concurrency.md) 
 有了 Semaphore，就可以对 unbounded channel 容量做出限制，正好符合我们的需求。
 
 因此 Buffer 定义了下面的结构：
+
 1. tx 是 mpsc channel 的发送端
 2. semaphore 是所有 service 句柄共享的信号量
 3. permit 是当前 service 获取的服务调用许可
@@ -86,7 +87,6 @@ where
     }
 }
 ```
-
 
 ## 2. 总结
 
