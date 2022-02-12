@@ -1,5 +1,7 @@
 ---
 title: wsl 开发环境配置
+categories: [linux, arch, configuration]
+date: 2022-2-12 10:47:45
 ---
 
 ## 1. WSL2 安装
@@ -78,7 +80,7 @@ git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:
 git clone git://github.com/zsh-users/zsh-autosuggestions $ZSH_CUSTOM/plugins/zsh-autosuggestions
 ```
 
-配置 `~/.zshrc` 中的 `plugins` 配置为 `plugins=(其他的插件 git-open zsh-autosuggestions zsh-autosuggestions z extract python)`（可以自己参考 `~/.oh-my-zsh/plugin` 中的插件目录，自行取舍）
+配置 `~/.zshrc` 中的 `plugins` 配置为 `plugins=(其他的插件 git-open zsh-autosuggestions zsh-autosuggestions z extract python)`（可以参考 `~/.oh-my-zsh/plugin` 中的插件目录，自行取舍）
 
 </br></br>
 
@@ -93,8 +95,9 @@ git clone git://github.com/zsh-users/zsh-autosuggestions $ZSH_CUSTOM/plugins/zsh
 在 `~/.zshrc` 中配置下面信息（个人习惯），当然你也可以根据个人喜好配置属于自己的快捷键，或者你可以采用 oh-my-zsh 已经配置好的 **zsh alias**
 
 ```bash
-alias ls=exa
+alias ls=exa # 需要安装 exa
 alias clo="git clone "
+alias rm=trash   # 需要安装 trash-cli
 ```
 
 ### 2.5 python 配置
@@ -122,7 +125,9 @@ curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
 git clone https://github.com/hsqStephenZhang/neovim-config.git ~/.config/nvim
 ```
 
-接着打开 nvim，命令模式下输入 `:PlugInstall`，完成插件的安装
+接着修改 `~/.config/nvim/init.vim` 并自行修改配置文件中的一些选项，比如插件设置，快捷键设置
+
+打开 nvim，命令模式下输入 `:PlugInstall`，完成插件的安装
 
 ### 2.7 Rust 配置
 
@@ -162,7 +167,7 @@ registry = "git://crates.rustcc.cn/crates.io-index"
 
 配置用户名和邮箱
 
-修改配置文件 `~/.gitconfig`，或者通过 `git config --global` 来设置 email,name 等属性，甚至可以设置 git 镜像网站，用来加速项目下载，比如在 `~/.gitconfig` 添加下面这条配置
+修改配置文件 `~/.gitconfig`，或者通过 `git config --global` 来设置 email,name 等属性，甚至可以设置 git 镜像网站，用来加速项目下载，比如在 `~/.gitconfig` 添加下面这条配置，可以加速国内 clone 速度
 
 ```bash
 [url "https://hub.fastgit.org"]
@@ -190,7 +195,7 @@ Host github.com
 
 详细信息可以参考 [docs](https://docs.microsoft.com/en-us/windows/wsl/wsl-config) [小白版 docs](https://dowww.spencerwoo.com/4-advanced/4-3-wslconfig.html)
 
-由于我在安装 arch linux 之前，还安装了 ubuntu 20.04，因此后者是默认的 WSL，也就用到了下面的命令修改：
+由于我在安装 arch linux 之前，还安装了 ubuntu 20.04，因此后者是默认的 WSL，也就用到了下面的命令修改默认的发行版本（vscode wsl 插件都可以识别）：
 
 ```powershell
 wslconfig /list # 确认名称叫 'Arch'

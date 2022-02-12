@@ -1,5 +1,7 @@
 ---
-title: do_exec 源码解析
+title: do_execve 源码解析
+categories: [linux, execve]
+date: 2022-2-12 10:47:45
 ---
 
 大家都知道，Linux 下面的可执行文件格式为 elf ，全称是 executable linkable format，中文名为“可执行可链接文件”，这种文件是以二进制的方式存储的，我们也可以将其称为二进制对象（binary object）。
