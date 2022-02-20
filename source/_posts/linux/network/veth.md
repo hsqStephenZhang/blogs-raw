@@ -10,7 +10,7 @@ veth ，又名虚拟网络设备对，主要是用于解决不同网络命名空
 
 说起网络名称空间（network namespace），大家应该都不陌生，这是 Linux 用来隔离容器网络环境的一项技术，主要隔离的资源有：
 
-1. iptables 
+1. iptables
 2. 路由规则表
 3. 网络设备列表
 
@@ -40,7 +40,6 @@ ip netns exec ns0 ping -I veth0 10.1.1.3
 
 ![communicate between network namespaces through veth](/images/sysnet-veth.png)
 
-
 ## 1. veth internal
 
 ### 1.1 创建 veth pair
@@ -49,57 +48,57 @@ ip netns exec ns0 ping -I veth0 10.1.1.3
 
 ```c
 static int veth_newlink(struct net *src_net, struct net_device *dev,
-			struct nlattr *tb[], struct nlattr *data[],
-			struct netlink_ext_ack *extack)
+            struct nlattr *tb[], struct nlattr *data[],
+            struct netlink_ext_ack *extack)
 {
-	/*
-	 * 首先设置和注册 peer
-	 */
+    /*
+     * 首先设置和注册 peer
+     */
 
     // ...
 
-	net = rtnl_link_get_net(src_net, tbp);
-	if (IS_ERR(net))
-		return PTR_ERR(net);
+    net = rtnl_link_get_net(src_net, tbp);
+    if (IS_ERR(net))
+        return PTR_ERR(net);
 
-	peer = rtnl_create_link(net, ifname, name_assign_type,
-				&veth_link_ops, tbp, extack);
-	
+    peer = rtnl_create_link(net, ifname, name_assign_type,
+                &veth_link_ops, tbp, extack);
+    
     // ...
 
-	err = register_netdevice(peer);
-	put_net(net);
-	net = NULL;
-	if (err < 0)
-		goto err_register_peer;
+    err = register_netdevice(peer);
+    put_net(net);
+    net = NULL;
+    if (err < 0)
+        goto err_register_peer;
 
-	netif_carrier_off(peer);
+    netif_carrier_off(peer);
 
-	err = rtnl_configure_link(peer, ifmp);
-	if (err < 0)
-		goto err_configure_peer;
+    err = rtnl_configure_link(peer, ifmp);
+    if (err < 0)
+        goto err_configure_peer;
 
-	/*
-	 * 之后注册 dev
-	 */
+    /*
+     * 之后注册 dev
+     */
     
     //...
 
-	err = register_netdevice(dev);
+    err = register_netdevice(dev);
 
-	netif_carrier_off(dev);
+    netif_carrier_off(dev);
 
-	/*
-	 * 将 dev 和 peer 关联起来
-	 */
+    /*
+     * 将 dev 和 peer 关联起来
+     */
 
-	priv = netdev_priv(dev);
-	rcu_assign_pointer(priv->peer, peer);
+    priv = netdev_priv(dev);
+    rcu_assign_pointer(priv->peer, peer);
 
-	priv = netdev_priv(peer);
-	rcu_assign_pointer(priv->peer, dev);
+    priv = netdev_priv(peer);
+    rcu_assign_pointer(priv->peer, dev);
 
-	return 0;
+    return 0;
 
     // 错误处理 ...
 }
@@ -112,7 +111,7 @@ veth 由两个设备组成，其中 dev 在调用 `veth_newlink` 之前已经创
 ```c
 static inline void *netdev_priv(const struct net_device *dev)
 {
-	return (char *)dev + ALIGN(sizeof(struct net_device), NETDEV_ALIGN);
+    return (char *)dev + ALIGN(sizeof(struct net_device), NETDEV_ALIGN);
 }
 ```
 
@@ -136,17 +135,17 @@ Linux 内核使用 `net_device` 来表示一个网络设备，但是不同厂商
 
 ```c
 struct veth_priv {
-	struct net_device __rcu	*peer;
-	atomic64_t		dropped;
-	struct bpf_prog		*_xdp_prog;
-	struct veth_rq		*rq;
-	unsigned int		requested_headroom;
+    struct net_device __rcu    *peer;
+    atomic64_t        dropped;
+    struct bpf_prog        *_xdp_prog;
+    struct veth_rq        *rq;
+    unsigned int        requested_headroom;
 };
 ```
 
 因此，通过 peer 字段就能关联另一个 `net_device`，`veth_newlink` 中 dev 与 peer 的配对过程也就很清晰了。
 
-### 1.2 初始化 veth 
+### 1.2 初始化 veth
 
 创建好 veth 之后，还需要通过 `rtnl_link_ops.setup` 回调函数进行初始化，对应 `veth_setup`
 
@@ -155,8 +154,8 @@ struct veth_priv {
 ```c
 static void veth_setup(struct net_device *dev)
 {
-	ether_setup(dev);
-	dev->netdev_ops = &veth_netdev_ops;
+    ether_setup(dev);
+    dev->netdev_ops = &veth_netdev_ops;
 
     ...
 }
@@ -170,23 +169,23 @@ Linux 提供框架，具体机制需要特殊对待。在网络包的发送路�
 static netdev_tx_t veth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
     struct veth_priv *rcv_priv, *priv = netdev_priv(dev);
-	rcu_read_lock();
-	rcv = rcu_dereference(priv->peer);
-	
-	if (likely(veth_forward_skb(rcv, skb, rq, rcv_xdp) == NET_RX_SUCCESS)) {
-		if (!rcv_xdp)
-			dev_lstats_add(dev, length);
-	} else {
+    rcu_read_lock();
+    rcv = rcu_dereference(priv->peer);
+    
+    if (likely(veth_forward_skb(rcv, skb, rq, rcv_xdp) == NET_RX_SUCCESS)) {
+        if (!rcv_xdp)
+            dev_lstats_add(dev, length);
+    } else {
 drop:
-		atomic64_inc(&priv->dropped);
-	}
+        atomic64_inc(&priv->dropped);
+    }
 
-	if (rcv_xdp)
-		__veth_xdp_flush(rq);
+    if (rcv_xdp)
+        __veth_xdp_flush(rq);
 
-	rcu_read_unlock();
+    rcu_read_unlock();
 
-	return NETDEV_TX_OK;
+    return NETDEV_TX_OK;
 }
 ```
 
@@ -196,11 +195,11 @@ drop:
 
 ```c
 static int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
-			    struct veth_rq *rq, bool xdp)
+                struct veth_rq *rq, bool xdp)
 {
-	return __dev_forward_skb(dev, skb) ?: xdp ?
-		veth_xdp_rx(rq, skb) :
-		netif_rx(skb);
+    return __dev_forward_skb(dev, skb) ?: xdp ?
+        veth_xdp_rx(rq, skb) :
+        netif_rx(skb);
 }
 ```
 
@@ -209,13 +208,11 @@ static int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
 ```c
 static int netif_rx_internal(struct sk_buff *skb)
 {
-	int ret;
-	...
-	trace_netif_rx(skb);
-	ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
-	...
-	return ret;
+    int ret;
+    ...
+    trace_netif_rx(skb);
+    ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
+    ...
+    return ret;
 }
 ```
-
-
