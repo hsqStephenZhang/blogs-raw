@@ -8,7 +8,7 @@ date: 2022-2-15 9:56:45
 
 ### 1.1 什么是 bridge
 
-即使你之前没有听说过 bridge，但交换机（switch）总有所耳闻吧。
+即使你之前没有听说过 bridge 这种新奇玩意，但凡是学过计算机网络的同学，对交换机（switch）总有所耳闻吧。
 
 通常所说的交换机工作在 OSI 参考模型的数据链路层，使用 MAC 地址转发数据，通过学习得到 MAC 地址到目标端口的映射表，依据这张表决定转发的下一个设备，并且有广播和单播等多种能力。
 
@@ -53,7 +53,7 @@ static int __init br_init(void)
         return err;
     }
 
-    // forward database 初始化
+    // forwarding database 初始化
     err = br_fdb_init();
     if (err)
         goto err_out;
@@ -76,9 +76,9 @@ static int __init br_init(void)
 }
 ```
 
-这里的 `brioctl_set(br_ioctl_deviceless_stub)` 值得一提，通过该函数设置了 bridge 的 ioctl 回调函数，上述的 brctl 最终就是在和 `br_ioctl_deviceless_stub` 打交道
+这里的 `brioctl_set(br_ioctl_deviceless_stub)` 值得一提，通过该函数设置了 bridge 的 ioctl 回调函数，上述的 brctl 工具最终就是在和 `br_ioctl_deviceless_stub` 打交道，通过其来进行网桥的控制（bridge's control）
 
-`br_ioctl_deviceless_stub` 逻辑也非常简单，对于不同的 command 派发不同的操作，这里也可以看到 `br_add_bridge` 和 `br_delete_bridge` 两个增伤的操作，是不是上面死板的命令一下子鲜活起来了呢？
+`br_ioctl_deviceless_stub` 逻辑也非常简单，对于不同的 command 派发（dispatch）不同的操作，这里也可以看到 `br_add_bridge` 和 `br_delete_bridge` 两个增删的操作，是不是对于上面的命令距离感更近了一步呢？
 
 ```c
 int br_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
@@ -112,7 +112,7 @@ int br_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uar
 
 ### 2.2 添加网桥
 
-接下来详细解释一下，**添加网桥**要经历哪些必不可少的步骤
+可以先从一个基础的**添加网桥**操作入手，详细解释一下要经历哪些必不可少的步骤
 
 ```c
 int br_add_bridge(struct net *net, const char *name)
@@ -120,6 +120,7 @@ int br_add_bridge(struct net *net, const char *name)
     struct net_device *dev;
     int res;
 
+    // 1. 创建设备
     dev = alloc_netdev(sizeof(struct net_bridge), name, NET_NAME_UNKNOWN,
                br_dev_setup);
 
@@ -127,8 +128,10 @@ int br_add_bridge(struct net *net, const char *name)
         return -ENOMEM;
 
     dev_net_set(dev, net);
+    // 2. 设置 rtnl_link_ops
     dev->rtnl_link_ops = &br_link_ops;
 
+    // 3. 注册网络设备
     res = register_netdev(dev);
     if (res)
         free_netdev(dev);
@@ -136,13 +139,15 @@ int br_add_bridge(struct net *net, const char *name)
 }
 ```
 
-`br_add_bridge` 主要做了下面几件事：
+`br_ioctl_deviceless_stub` 中可以看到，添加网桥对应 `br_add_bridge`，`br_add_bridge` 主要做了下面几件事：
 
 1. 创建 bridge device，并且通过 `br_dev_setup` 初始化该设备
 2. 设置 dev 对应的 `rtnl_link_ops` 为  `br_link_ops`
 3. 调用 `register_netdev` 将网桥设备注册到系统中
 
-值得一提的是，在 `br_dev_setup` 函数当中完成了 bridge 的一些初始化操作。主要设置了 bridge 设备的一些字段，比如关键的 `dev->netdev_ops` `dev->ethtool_ops`
+值得一提的是，在 `alloc_netdev` 中传入了 `br_dev_setup` 这个函数指针用于回调，完成初始化操作
+
+ `br_dev_setup` 函数当中主要设置了 bridge 设备的一些字段，比如关键的 `dev->netdev_ops` `dev->ethtool_ops`，这里不过多赘述
 
 ### 2.3 net_bridge 结构
 
@@ -171,7 +176,7 @@ Tips:
 
 ### 2.4 发送数据
 
-之前提到，`br_dev_setup` 中设置了 bridge 相关的网络驱动，这不，发送数据包不就用到了 `dev->netdev_ops.ndo_start_xmit` 吗。
+之前提到，`br_dev_setup` 中设置了 bridge 的一些字段，这不，发送数据包的时候就用上了
 
 对于 bridge 而言，发送 skb 的回调函数 `ndo_start_xmit` 即为 `br_dev_xmit`
 
@@ -205,7 +210,7 @@ out:
 }
 ```
 
-`br_dev_xmit` 主要是根据 skb 中的目标 MAC 地址决定数据包发送到哪些网络端口。通过 `eth_hdr` 获取到 skb 的目标 MAC 地址之后，有下面几种可能的操作：
+主要关注这个函数中的 `if` `else` 逻辑。其根据 skb 中的目标 MAC 地址决定数据包发送到哪些网络端口。通过 `eth_hdr` 获取到 skb 的目标 MAC 地址之后，有下面几种可能的操作：
 
 1. br_foward             -- 转发
 2. br_flood(MULTICAST)   -- 多播
@@ -218,11 +223,19 @@ out:
 
 `br_forward` 函数最终会通过 `dev_queue_xmit` 将 skb 发送出去。相信大家对于 `dev_queue_xmit` 已经不陌生了，这可以说是承接 ip 层和设备驱动层的一个关键函数，从这里往下执行，最终会调用网络设备的 `ndo_start_xmit` 回调函数发送 skb。
 
-值得一提的是，`br_foward` 中也存在一个 `NF_HOOK`，名称为 `NFPROTO_BRIDGE`，可以通过编译选项开启。
+值得一提的是，`br_foward` 中也存在一个 `NF_HOOK`，名称为 `NFPROTO_BRIDGE`，可以通过编译选项开启，如果查看 net_nf 结构，也会发现对应的 `nf_hook_entries`
+
+```c
+struct netns_nf {
+    // ...
+#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+    struct nf_hook_entries __rcu *hooks_bridge[NF_INET_NUMHOOKS];
+}
+```
 
 #### 2.4.2 br_flood
 
-flood 的字面意思为洪水。那么 `br_flood` 的作用就是将数据包发送到网桥上的**所有**接口设备上
+flood 的字面意思为洪水，在计算机属于中，洪水~=广播。这样看来 `br_flood` 的作用就是将数据包发送到网桥上的**所有**接口设备上，要证实我们的想法还是得看源码
 
 ```c
 void br_flood(struct net_bridge *br, struct sk_buff *skb,
@@ -268,11 +281,15 @@ void br_flood(struct net_bridge *br, struct sk_buff *skb,
 
 `maybe_deliver` 则是间接调用了 `deliver_clone`，将 skb 复制一份并调用 `__bf_forward` 转发到特定的端口设备上，就不重复解释了
 
-### 2.5 MAC 地址
+## 3 细说 fdb
 
-作为一个与交换机功能类似的虚拟设备，bridge 自然也需要实现和 OSI 数据链路层协议相关的功能。
+前面说到了 fdb（forwarding database），这里有必要说道说道。
 
-这里回顾一下二层交换机的功能：
+### 3.1 MAC 地址
+
+作为一个与交换机功能类似的虚拟设备，bridge 自然也需要实现数据链路层协议相关的功能。
+
+首先认识一下二层交换机的功能：
 
 1. 收到某网段（设为A）MAC 地址为 X 的计算机发给 MAC 地址为 Y 的计算机的数据包。交换机从而记下了 MAC 地址 X 在网段 A。这称为学习（learning）。
 2. 交换机还不知道MAC地址Y在哪个网段上，于是向除了 A 以外的所有网段转发该数据包。这称为泛洪（flooding）。
@@ -281,4 +298,8 @@ void br_flood(struct net_bridge *br, struct sk_buff *skb,
 5. 交换机收到一个数据包，查表后发现该数据包的来源地址与目的地址属于同一网段。交换机将不处理该数据包。这称为过滤（filtering）。
 6. 交换机内部的MAC地址-网段查询表的每条记录采用时间戳记录最后一次访问的时间。早于某个阈值（用户可配置）的记录被清除。这称为老化（aging）。
 
-上面已经介绍了 flood 和 forward 的具体机制，而和 MAC 地址相关一些 learning，aging 操作在[源码](https://github.com/torvalds/linux/blob/master/net/bridge/br_fdb.c)当中也有对应的实现，详情可以参考 `br_fdb_change_mac_address` `br_fdb_cleanup` `br_fdb_flush` `br_fdb_delete_by_port` 等函数
+这里需要插一句话，如果对二层交换机的原理不大了解，可以先回顾一下和 MAC 地址有关的三层协议：ARP（address resolution protocol）-- 地址解析协议。
+
+ARP 协议的作用是，通过 IP 地址解析出实际的 MAC 地址，将数据包发送到对应的设备上。ARP 协议需要一张表格，表格中存储了所有的 IP 地址和 MAC 地址的对应关系，即 arp_table。二层交换机也是如此，只不过，这里的映射关系不再是 IP-MAC，而是 MAC-端口。记录这种映射关系的表格称为 fdb。
+
+### 3.2 fdb

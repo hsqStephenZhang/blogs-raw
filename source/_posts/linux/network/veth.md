@@ -4,7 +4,7 @@ categories: [linux, network, namespace, veth]
 date: 2022-2-13 13:37:45
 ---
 
-## veth 是什么
+## 1. veth 是什么
 
 veth ，又名虚拟网络设备对，主要是用于解决不同网络命名空间之间的通信。
 
@@ -40,11 +40,13 @@ ip netns exec ns0 ping -I veth0 10.1.1.3
 
 ![communicate between network namespaces through veth](/images/sysnet-veth.png)
 
-## 1. veth internal
+## 2. veth internal
 
-### 1.1 创建 veth pair
+下面分别从 创建，初始化，发送数据 三个角度来剖析 veth 源码。
 
-使用 ip 命令创建一对 veth 时，会触发 `rtnl_link_ops.newlink` 回调函数来完成这项任务，对应 `veth_newlink`
+### 2.1 创建 veth pair
+
+使用 ip 命令创建一对 veth 时，会通过 netlink 触发 `rtnl_link_ops.newlink` 回调函数，如果感兴趣，可以看我的另一篇文章 {% post_link linux/network/netlink [netlink 机制] %} ，对应 `veth_newlink`
 
 ```c
 static int veth_newlink(struct net *src_net, struct net_device *dev,
@@ -89,7 +91,7 @@ static int veth_newlink(struct net *src_net, struct net_device *dev,
     netif_carrier_off(dev);
 
     /*
-     * 将 dev 和 peer 关联起来
+     * 关联 dev 和 peer
      */
 
     priv = netdev_priv(dev);
@@ -104,20 +106,13 @@ static int veth_newlink(struct net *src_net, struct net_device *dev,
 }
 ```
 
-veth 由两个设备组成，其中 dev 在调用 `veth_newlink` 之前已经创建完成了，接下来首先需要通过 `rtnl_create_link` 创建另一个设备 peer，并通过 `register_netdevice` 分别将 peer 和 dev 注册到 netdevice 列表当中。
+veth 由两个设备组成，其中 dev 在调用 `veth_newlink` 之前已经创建完成了，接下来首先需要通过 `rtnl_create_link` 创建另一个设备 peer，并通过 `register_netdevice` 分别将 peer 和 dev 注册到 netdevice 列表当中
 
-之后的这步是 veth 的核心：通过 priv 字段关联 dev 和 peer
-
-```c
-static inline void *netdev_priv(const struct net_device *dev)
-{
-    return (char *)dev + ALIGN(sizeof(struct net_device), NETDEV_ALIGN);
-}
-```
+下一步是 veth 的核心：通过 priv 字段关联 dev 和 peer
 
 这里有必要解释一下 `net_device` 的结构，以及 `netdev_priv` 的作用
 
-Linux 内核使用 `net_device` 来表示一个网络设备，但是不同厂商的设备规格有一定差别，为了最大程度**求同存异**，在 net_device 结构体中保留了私有数据的存储空间，一般保存在 net_device 对象结束之后的位置（不难从 `netdev_priv` 中的 `sizeof(struct net_device` 得到证实）
+Kernel 使用 `net_device` 来表示一个网络设备，但是不同厂商的设备规格有一定差别，所以 net_device 结构体采用了**面向对象**的思想，不仅有所有设备共有的结构（基类），还保留了私有数据的存储空间（子类），私有结构一般保存在 net_device 对象结束之后的位置（不难从 `netdev_priv` 中的 `sizeof(struct net_device` 得到证实），示意图如下所示：
 
 ```text
 
@@ -129,6 +124,13 @@ Linux 内核使用 `net_device` 来表示一个网络设备，但是不同厂商
         | xx_private | \
         |            | / sizeof private struct
         |------------|/
+```
+
+```c
+static inline void *netdev_priv(const struct net_device *dev)
+{
+    return (char *)dev + ALIGN(sizeof(struct net_device), NETDEV_ALIGN);
+}
 ```
 
 而对于 veth 来说，这个 private 字段就是 `struct veth_priv`
@@ -145,11 +147,11 @@ struct veth_priv {
 
 因此，通过 peer 字段就能关联另一个 `net_device`，`veth_newlink` 中 dev 与 peer 的配对过程也就很清晰了。
 
-### 1.2 初始化 veth
+### 2.2 初始化 veth
 
-创建好 veth 之后，还需要通过 `rtnl_link_ops.setup` 回调函数进行初始化，对应 `veth_setup`
+创建好 veth 之后，还需要通过 `rtnl_link_ops.setup` 进行初始化才能使用，对应 `veth_setup`
 
-该函数中主要设置了 veth 对应 net_device 的一些字段，最关键的莫过于 `netdev_ops` 了
+该函数中主要设置了 veth 对应 net_device 的一些字段
 
 ```c
 static void veth_setup(struct net_device *dev)
@@ -161,9 +163,22 @@ static void veth_setup(struct net_device *dev)
 }
 ```
 
-### 1.3 veth_xmit
+关注 `dev->netdev_ops = &veth_netdev_ops;`，因为我们都知道，内核最终发送 skb 数据包就是通过回调 `netdev_ops->ndo_start_xmit`，这样就进入到了 veth 的掌握之中。
 
-Linux 提供框架，具体机制需要特殊对待。在网络包的发送路径中，经过 ip 和 neighbor 系统之后，会调用具体网络设备的  `ndo_start_xmit` 回调函数发送数据包，如果是真实的网卡驱动，一般会将 skb 放到自己的缓冲区并发送数据，之后通知 CPU......，对于 veth 这种虚拟设备而言则大不相同，请看 `veth_xmit`
+同时，在 veth 模块的初始化操作中，还将 veth_netdev_ops 注册到了 rtnetlink 中，从而可以通过 netlink 向外提供服务
+
+```c
+static __init int veth_init(void)
+{
+	return rtnl_link_register(&veth_link_ops);
+}
+```
+
+像 `ip link add veth0 type veth peer name veth1` 这些和 veth 相关的网络命令，都会通过 netlink socket，最终交由 veth_link_ops 中的回调函数处理。
+
+### 2.3 发送数据
+
+在驱动层，内核通过 `netdev_ops->ndo_start_xmit` 发送数据包，前面说到，`veth_setup` 函数中已经将 netdev_ops 设置为 veth_netdev_ops，其中的 ndo_start_xmit 对应下面的 `veth_xmit`
 
 ```c
 static netdev_tx_t veth_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -189,9 +204,9 @@ drop:
 }
 ```
 
-首先获取到了 `veth_priv` 结构中的 peer，也就是与当前设备关联的另一个虚拟网络设备，接下来调用 `veth_forward_skb`
+来看该函数的逻辑：首先获取到了 `veth_priv` 结构中的 peer，也就是与当前设备关联的另一个虚拟网络设备，接下来调用 `veth_forward_skb`
 
-该函数的命名还是非常贴切的：转发由 veth 对端设备发来的 skb 数据包
+该函数的命名还是非常贴切的：将 skb 数据包转发到 veth 的 peer 上
 
 ```c
 static int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
@@ -203,7 +218,7 @@ static int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
 }
 ```
 
-`veth_forward_skb` 有两条路径来处理数据包，暂且不论第一条 xdp 处理路径，更常用的是后面的 `netif_rx` 函数，其将 skb 放到了 cpu backlog 队列中，提供给上层协议使用，mission complete！
+`veth_forward_skb` 有两条路径来处理数据包，暂且不论第一条 xdp 处理路径，`netif_rx` 才是热路径，其最终调用了 `netif_rx_internal`，将 skb 放到了 cpu backlog 队列中，并且发送软中断进行处理，之后就进入到网络收包路径上，最终调用 peer 的收包回调函数进行处理（dev 和 peer 的 net_dev_ops 分别在 veth_setup 和 veth_newlink 中设置，不过都为 veth_netdev_ops）
 
 ```c
 static int netif_rx_internal(struct sk_buff *skb)

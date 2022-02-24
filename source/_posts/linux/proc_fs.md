@@ -10,7 +10,7 @@ date: 2022-1-19 16:49:40
 
 如果你查看 `/proc` 目录下的内容，会发现，除了一堆数字命名的文件夹，还有很多杂七杂八的文件，比如 `kallsyms cpuinfo meminfo`，这些文件也都是系统的一些信息，比如 kallsyms 可以展示当前 vmlinux 的所有符号，cpuinfo 展示的是 cpu 的一些参数，meminfo 展示的是内存的一些参数。这些实现都比较简单；稍微复杂一些的是以数字命名的文件夹，也就是所有进程的信息，这也正是 proc 文件系统名字的由来。
 
-之前的一篇 {% post_link linux-basic/seq_file 文章 %}中已经介绍了 procfs 下 `/proc/kallsyms` 以及 seq_file 的实现机制，而本文着重 procfs 的整体框架，并着重分析和 process 有关的 `/proc/${pid}` 一系列内容
+之前的一篇 {% post_link linux/seq_file 文章 %}中已经介绍了 procfs 下 `/proc/kallsyms` 以及 seq_file 的实现机制，而本文着重 procfs 的整体框架，并着重分析和 process 有关的 `/proc/${pid}` 一系列内容
 
 ## 2. procfs 的 inode 以及 file_operations
 
