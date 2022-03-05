@@ -362,10 +362,10 @@ out_unlock:
 
 ### 2.1 非 NAPI 工作方式
 
-了解了 NAPI 这种中断和轮询相结合的收包方式之后？我们再来回顾一下经典的 backlog 队列模式
+了解了 NAPI 这种中断和轮询相结合的收包方式之后？再来回顾一下经典的 backlog 队列模式，就能领会到 Linux 向下兼容的艺术。
 
 对于不支持 NAPI 工作方式的网卡，在网卡的中断处理函数中会直接调用 netif_rx，其在中断上下文中执行，执行期间会关闭 CPU 的中断，工作完成再重新打开。
-netif_rx 函数的工作最终由 enqueue_to_backlog 完成。
+netif_rx 函数的工作最终主要由 enqueue_to_backlog 完成。
 
 ```text
 hw interrupt handler
@@ -417,10 +417,17 @@ drop:
 }
 ```
 
-如果设备的输入队列未被开启（通过测试dev.state是否设置__LINK_STATE_START，输入没有特定的标记）
-如果队列中没有其他数据，先通过____napi_schedule()调度NAPI（把sd.backlog放入sd.poll_list然后调度SoftIRQ）
-把skb放入sd.input_pkt_queue尾部（在队列未满或者流控允许的情况下）
+来看看 softnet_data 结构中与 non-napi 设备相关的字段，
 
+- sd.input_pkt_queue
+该队列仅用于 non-napi 设备。non-napi 设备会在驱动程序中（往往是中断处理函数）分配 skb，从寄存器读取数据到 skb，然后调用 netif_rx 把 skb 放到 sd->input_pkt_queue 中。注意，所有 non-napi 设备共享输入队列，即 per-cpu 的sd->input_pkt_queue。
+
+- sd.process_queue
+刚才已经提到，non-napi 设备把 skb 放入 sd.input_pkt_queue，然后在下半部处理中使用 sd.backlog.poll 即proces_backlog 函数来处理 skb。改函数模拟了 NAPI 驱动的 poll 函数行为。作为对比，NAPI 设备的 poll 从设备私有队列读取。Non-NAPI 的 process_backlog 函数则从 non-napi 设备共享的输入队列 input_pkt_queue 中读取配额的数据。然后放入 sd.process_queue。
+
+- sd.backlog
+用于 non-napi 设备，为了和 NAPI 接收架构兼容，所有的 non-napi 设备使用一个虚拟的 napi_struct，即这里的 sd.backlog。NAPI 设备把自己的 napi_struct 放入sd->poll_list，而所有的 non-napi 设备在 netif_rx 的时候把sd->backlog 放入 sd->poll_list。在中断下半部处理函数中，会通过 napi_poll 调用 backlog.poll 进行处理。
+通过这种**共享的虚拟 napi_struct**方式，使得 non-napi 设备很好的融入了 NAPI 框架，使得 non-napi 和 NAPI 设备对下半部（net_rx_action）是透明的。不得不说，这是一个值得学习的精巧设计，让我们知道如何向前兼容旧的机制，如何让下层的变化对上层透明。
 
 ## 3. NAPI 示例
 
