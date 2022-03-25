@@ -1,7 +1,7 @@
 ---
 title: bridge 
 categories: [linux, network, docker, bridge]
-date: 2022-2-15 9:56:45
+date: 2022-2-15 9:56:00
 ---
 
 ## 1. Overlook
@@ -10,7 +10,7 @@ date: 2022-2-15 9:56:45
 
 即使你之前没有听说过 bridge 这种新奇玩意，但凡是学过计算机网络的同学，对交换机（switch）总有所耳闻吧。
 
-通常所说的交换机工作在 OSI 参考模型的数据链路层，使用 MAC 地址转发数据，通过学习得到 MAC 地址到目标端口的映射表，依据这张表决定转发的下一个设备，并且有广播和单播等多种能力。
+通常所说的**交换机**工作在 OSI 参考模型的**数据链路层**，使用 MAC 地址转发数据，通过学习得到 MAC 地址到目标端口的映射表，依据这张表决定转发的下一个设备，并且有广播和单播等多种能力。
 
 bridge 是 Linux 软件模拟出来的一种**类似**交换机的虚拟设备。
 
@@ -33,13 +33,13 @@ bridge 是 Linux 软件模拟出来的一种**类似**交换机的虚拟设备�
 
 ## 2. bridge internal
 
-光练不读源码假把式，还是需要深入到 Linux 源码，来看看 bridge 究竟有没有那么神奇
+光练不读源码假把式，还需要深入到 Linux 源码，来看看 bridge 究竟有没有那么神奇
 
 ### 2.1 初始化网桥
 
-万物离不开初始化，bridge 模块通过 `br_init` 完成这项任务
+万物不及初始化，bridge 模块通过 `br_init` 完成这项任务
 
-在 `br_init` 中，将 `br_ioctl_hook` 设置为了 `br_ioctl_deviceless_stub`，brctl 的所有指令，都会触发该回调函数，通过不同的 command（cmd），分发不同的操作函数即可
+在 `br_init` 中，将 `br_ioctl_hook` 设置为了 `br_ioctl_deviceless_stub`，brctl 的所有指令，都会触发该回调函数，通过不同的 command（cmd），分发（dispatch）不同的操作函数即可，如果对应到硬件上，相当于多路复用器。
 
 ```c
 static int __init br_init(void)
@@ -76,9 +76,7 @@ static int __init br_init(void)
 }
 ```
 
-这里的 `brioctl_set(br_ioctl_deviceless_stub)` 值得一提，通过该函数设置了 bridge 的 ioctl 回调函数，上述的 brctl 工具最终就是在和 `br_ioctl_deviceless_stub` 打交道，通过其来进行网桥的控制（bridge's control）
-
-`br_ioctl_deviceless_stub` 逻辑也非常简单，对于不同的 command 派发（dispatch）不同的操作，这里也可以看到 `br_add_bridge` 和 `br_delete_bridge` 两个增删的操作，是不是对于上面的命令距离感更近了一步呢？
+`br_ioctl_deviceless_stub` 逻辑也非常简单，对于不同的 command 派发（dispatch）不同的操作，比如 `br_add_bridge` 和 `br_delete_bridge` 两个增删的操作，分别对应了 `SIOCBRADDBR` 和 `SIOCBRDELBR`
 
 ```c
 int br_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
@@ -145,161 +143,298 @@ int br_add_bridge(struct net *net, const char *name)
 2. 设置 dev 对应的 `rtnl_link_ops` 为  `br_link_ops`
 3. 调用 `register_netdev` 将网桥设备注册到系统中
 
-值得一提的是，在 `alloc_netdev` 中传入了 `br_dev_setup` 这个函数指针用于回调，完成初始化操作
-
- `br_dev_setup` 函数当中主要设置了 bridge 设备的一些字段，比如关键的 `dev->netdev_ops` `dev->ethtool_ops`，这里不过多赘述
-
-### 2.3 net_bridge 结构
-
-从 `br_add_bridge` 中可以看出，Linux 使用 `net_bridge` 来描述一个网桥设备，定义如下
+`br_dev_setup` 用于完成内存分配之后的初始化操作，主要设置了 bridge 设备的一些字段，比如关键的 `dev->netdev_ops`，是网桥设备对上层的接口
 
 ```c
-struct net_bridge {
-    spinlock_t            lock;
-    spinlock_t            hash_lock;
-    struct list_head        port_list;
-    struct net_device        *dev;
-    ...
-    struct hlist_head        fdb_list;
+static const struct net_device_ops br_netdev_ops = {
+	.ndo_open		 = br_dev_open,
+	.ndo_stop		 = br_dev_stop,
+	.ndo_init		 = br_dev_init,
+	.ndo_uninit		 = br_dev_uninit,
+	.ndo_start_xmit		 = br_dev_xmit,
+	.ndo_get_stats64	 = br_get_stats64,
+	.ndo_set_mac_address	 = br_set_mac_address,
+	.ndo_set_rx_mode	 = br_dev_set_multicast_list,
+	.ndo_change_rx_flags	 = br_dev_change_rx_flags,
+	.ndo_change_mtu		 = br_change_mtu,
+	.ndo_do_ioctl		 = br_dev_ioctl,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_netpoll_setup	 = br_netpoll_setup,
+	.ndo_netpoll_cleanup	 = br_netpoll_cleanup,
+	.ndo_poll_controller	 = br_poll_controller,
+#endif
+	.ndo_add_slave		 = br_add_slave,
+	.ndo_del_slave		 = br_del_slave,
+	.ndo_fix_features        = br_fix_features,
+	.ndo_fdb_add		 = br_fdb_add,
+	.ndo_fdb_del		 = br_fdb_delete,
+	.ndo_fdb_dump		 = br_fdb_dump,
+	.ndo_fdb_get		 = br_fdb_get,
+	.ndo_bridge_getlink	 = br_getlink,
+	.ndo_bridge_setlink	 = br_setlink,
+	.ndo_bridge_dellink	 = br_dellink,
+	.ndo_features_check	 = passthru_features_check,
 };
 ```
 
-几个关键字段的作用为：
+删除设备的源码也留给读者自己研读。
 
-1. port_list：端口列表，保存所有接入网桥的网络接口
-2. fdb_list：以网络接口的 MAC 地址为值，网桥端口为键的哈希表
+### 2.3 添加网桥 slave 设备
 
-```text
-Tips:
-    之所以 fdb_list 以 MAC 地址为值，网桥端口为键，是因为网桥是一个二层设备，需要根据目标的 MAC 地址进行广播或者单播，当目标的 MAC 地址在网桥中对应一个端口，就表明此次为单播，否则为广播
-```
-
-### 2.4 发送数据
-
-之前提到，`br_dev_setup` 中设置了 bridge 的一些字段，这不，发送数据包的时候就用上了
-
-对于 bridge 而言，发送 skb 的回调函数 `ndo_start_xmit` 即为 `br_dev_xmit`
+网桥设备创建完成后需要在其下面添加 slave 设备才能使网桥设备正常工作起来，主要任务在 `ndo_add_slave` 对应的 `br_add_slave` 方法中完成，调用链为
 
 ```c
-netdev_tx_t br_dev_xmit(struct sk_buff *skb, struct net_device *dev)
-{
-    ...
-    dest = eth_hdr(skb)->h_dest;
-    if (is_broadcast_ether_addr(dest)) {
-        br_flood(br, skb, BR_PKT_BROADCAST, false, true);
-    } else if (is_multicast_ether_addr(dest)) {
-        if (unlikely(netpoll_tx_running(dev))) {
-            br_flood(br, skb, BR_PKT_MULTICAST, false, true);
-            goto out;
-        }
+br_netdev_ops->ndo_add_slave = br_add_slave
+    --> br_add_if
+        --> br_get_rx_handler
+        --> netdev_rx_handler_register
+```
 
-        ...
-        if ((mdst || BR_INPUT_SKB_CB_MROUTERS_ONLY(skb)) &&
-            br_multicast_querier_exists(br, eth_hdr(skb)))
-            br_multicast_flood(mdst, skb, false, true);
-        else
-            br_flood(br, skb, BR_PKT_MULTICAST, false, true);
-    } else if ((dst = br_fdb_find_rcu(br, dest, vid)) != NULL) {
-        br_forward(dst->dst, skb, false, true);
-    } else {
-        br_flood(br, skb, BR_PKT_UNICAST, false, true);
-    }
-out:
-    rcu_read_unlock();
-    return NETDEV_TX_OK;
+最终来到了 `netdev_rx_handler_register` 中，将从设备的 `dev->rx_handler` 实例赋值为 `br_handle_frame` 函数
+
+```c
+int netdev_rx_handler_register(struct net_device *dev,
+			       rx_handler_func_t *rx_handler,
+			       void *rx_handler_data)
+{
+	if (netdev_is_rx_handler_busy(dev))
+		return -EBUSY;
+
+	if (dev->priv_flags & IFF_NO_RX_HANDLER)
+		return -EINVAL;
+
+	/* Note: rx_handler_data must be set before rx_handler */
+	rcu_assign_pointer(dev->rx_handler_data, rx_handler_data);
+	rcu_assign_pointer(dev->rx_handler, rx_handler);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(netdev_rx_handler_register);
+```
+   
+### 2.4 网桥与网络收发包路径
+
+之所以强调了上一步的 `dev->rx_handler`，是因为在收包的关键处理函数 `__netif_receive_skb_core` 中，对于附加在网桥上的**从属设备**而言，会获取并调用 `skb->dev->rx_handler` ，也就是 `br_add_if` 时设置的 `br_handle_frame`
+
+```c
+static int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
+				    struct packet_type **ppt_prev)
+{
+    // ...
+    rx_handler = rcu_dereference(skb->dev->rx_handler);
+	if (rx_handler) {
+		if (pt_prev) {
+			ret = deliver_skb(skb, pt_prev, orig_dev);
+			pt_prev = NULL;
+		}
+		switch (rx_handler(&skb)) {
+		case RX_HANDLER_CONSUMED:
+			ret = NET_RX_SUCCESS;
+			goto out;
+		case RX_HANDLER_ANOTHER:
+			goto another_round;
+		case RX_HANDLER_EXACT:
+			deliver_exact = true;
+		case RX_HANDLER_PASS:
+			break;
+		default:
+			BUG();
+		}
+	}
+    // ...
 }
 ```
 
-主要关注这个函数中的 `if` `else` 逻辑。其根据 skb 中的目标 MAC 地址决定数据包发送到哪些网络端口。通过 `eth_hdr` 获取到 skb 的目标 MAC 地址之后，有下面几种可能的操作：
+反之，如果不是附加在网桥上的 net_device，就不存在 `dev->rx_handler`，也就不会经历上述流程。
 
-1. br_foward             -- 转发
-2. br_flood(MULTICAST)   -- 多播
-3. br_flood(BROADCAST)   -- 广播
-4. br_flood(UNICAST)     -- 单播
+接下来就探究 `br_handle_frame` 究竟做了什么。
+
+首先通过 perf/funcgraph 等工具，可以查看 `br_handle_frame` 的调用链，大致如下
+
+```text
+br_handle_frame
+    --> br_handle_frame_finish
+        --> br_forward
+            --> __br_forward
+                --> br_forward_finish
+                    --> br_dev_queue_push_xmit
+                        --> dev_queue_xmit
+
+...
+br_handle_frame
+    --> br_handle_frame_finish
+        --> br_flood
+            --> __br_forward
+                --> br_forward_finish
+                    --> br_dev_queue_push_xmit
+                        --> dev_queue_xmit
+            --> __br_forward
+                --> br_forward_finish
+                    --> br_dev_queue_push_xmit
+                        --> dev_queue_xmit
+            --> __br_forward
+                --> br_forward_finish
+                    --> br_dev_queue_push_xmit
+                        --> dev_queue_xmit
+
+...
+br_handle_frame
+    --> br_handle_frame_finish
+        --> br_pass_frame_up
+            --> br_netif_receive_skb
+                --> netif_receive_skb
+                    --> netif_receive_skb_internal
+                        --> __netif_receive_skb_list
+                            --> __netif_receive_skb_list_core
+                                --> __netif_receive_skb_core
+                                    --> 
+```
+
+在 `br_handle_frame_finish` 中，有四条处理数据包的路径，也是网桥的几个**核心能力**，分别是：
+
+1. br_forward
+2. br_flood
+3. br_multicast_flood
+4. br_pass_frame_up
+
+其中最后一条路径是处理发向本地的数据包，不是发往本地的数据包，若能在 fdb 中找到对应的表项，则调用 br_forward，否则进行洪泛，通过一些标志位的判断走不通的路径。
 
 #### 2.4.1 br_forward
 
-在 `br_dev_xmit` 的判定逻辑中，如果本次发送方式不为 broadcast/multicast，并且可以在 forward_database(fdb) 当中找到该端口，就表明本次发送是**转发**，对应 `br_forward`
+```c
+void br_forward(const struct net_bridge_port *to,
+		struct sk_buff *skb, bool local_rcv, bool local_orig)
+{
+	if (unlikely(!to))
+		goto out;
 
-`br_forward` 函数最终会通过 `dev_queue_xmit` 将 skb 发送出去。相信大家对于 `dev_queue_xmit` 已经不陌生了，这可以说是承接 ip 层和设备驱动层的一个关键函数，从这里往下执行，最终会调用网络设备的 `ndo_start_xmit` 回调函数发送 skb。
+	/* redirect to backup link if the destination port is down */
+	if (rcu_access_pointer(to->backup_port) && !netif_carrier_ok(to->dev)) {
+		struct net_bridge_port *backup_port;
 
-值得一提的是，`br_foward` 中也存在一个 `NF_HOOK`，名称为 `NFPROTO_BRIDGE`，可以通过编译选项开启，如果查看 net_nf 结构，也会发现对应的 `nf_hook_entries`
+		backup_port = rcu_dereference(to->backup_port);
+		if (unlikely(!backup_port))
+			goto out;
+		to = backup_port;
+	}
+
+	if (should_deliver(to, skb)) {
+		if (local_rcv)
+			deliver_clone(to, skb, local_orig);
+		else
+			__br_forward(to, skb, local_orig);
+		return;
+	}
+
+out:
+	if (!local_rcv)
+		kfree_skb(skb);
+}
+EXPORT_SYMBOL_GPL(br_forward);
+```
+
+上面仅仅是针对 `__br_forward` 的一层封装，关键点在于下面这个函数。首先需要思考：什么是转发？
+
+转发是将数据包从一个设备发送到另一个设备，然后触发网络设备的回调函数，剩下的流程 Linux 已经为我们安排好了，因此**转发**最关键的操作，就是将 `skb->dev` 设置为目标设备，然后通过 `dev_queue_xmit` 交给设备驱动来处理。
 
 ```c
-struct netns_nf {
+static void __br_forward(const struct net_bridge_port *to,
+			 struct sk_buff *skb, bool local_orig)
+{
     // ...
-#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
-    struct nf_hook_entries __rcu *hooks_bridge[NF_INET_NUMHOOKS];
+    // !important
+	indev = skb->dev;
+	skb->dev = to->dev;
+    // ...
+
+	NF_HOOK(NFPROTO_BRIDGE, br_hook,
+		net, NULL, skb, indev, skb->dev,
+		br_forward_finish);
 }
 ```
 
-#### 2.4.2 br_flood
-
-flood 的字面意思为洪水，在计算机属于中，洪水~=广播。这样看来 `br_flood` 的作用就是将数据包发送到网桥上的**所有**接口设备上，要证实我们的想法还是得看源码
+#### 2.4.2 br_flood 
 
 ```c
 void br_flood(struct net_bridge *br, struct sk_buff *skb,
-          enum br_pkt_type pkt_type, bool local_rcv, bool local_orig)
+	      enum br_pkt_type pkt_type, bool local_rcv, bool local_orig)
 {
-    struct net_bridge_port *prev = NULL;
-    struct net_bridge_port *p;
+	struct net_bridge_port *prev = NULL;
+	struct net_bridge_port *p;
 
-    list_for_each_entry_rcu(p, &br->port_list, list) {
-        // 三种 flood 类型
-        switch (pkt_type) {
-        case BR_PKT_UNICAST:
-            if (!(p->flags & BR_FLOOD))
-                continue;
-            break;
-        case BR_PKT_MULTICAST:
-            if (!(p->flags & BR_MCAST_FLOOD) && skb->dev != br->dev)
-                continue;
-            break;
-        case BR_PKT_BROADCAST:
-            if (!(p->flags & BR_BCAST_FLOOD) && skb->dev != br->dev)
-                continue;
-            break;
-        }
+	list_for_each_entry_rcu(p, &br->port_list, list) {
+		/* Do not flood unicast traffic to ports that turn it off, nor
+		 * other traffic if flood off, except for traffic we originate
+		 */
+		switch (pkt_type) {
+		case BR_PKT_UNICAST:
+			if (!(p->flags & BR_FLOOD))
+				continue;
+			break;
+		case BR_PKT_MULTICAST:
+			if (!(p->flags & BR_MCAST_FLOOD) && skb->dev != br->dev)
+				continue;
+			break;
+		case BR_PKT_BROADCAST:
+			if (!(p->flags & BR_BCAST_FLOOD) && skb->dev != br->dev)
+				continue;
+			break;
+		}
 
-        if (p->flags & BR_PROXYARP)
-            continue;
-        if ((p->flags & (BR_PROXYARP_WIFI | BR_NEIGH_SUPPRESS)) &&
-            BR_INPUT_SKB_CB(skb)->proxyarp_replied)
-            continue;
+		/* Do not flood to ports that enable proxy ARP */
+		if (p->flags & BR_PROXYARP)
+			continue;
+		if ((p->flags & (BR_PROXYARP_WIFI | BR_NEIGH_SUPPRESS)) &&
+		    BR_INPUT_SKB_CB(skb)->proxyarp_replied)
+			continue;
 
-        // 发送数据包
-        prev = maybe_deliver(prev, p, skb, local_orig);
-        if (IS_ERR(prev))
-            goto out;
-    }
+		prev = maybe_deliver(prev, p, skb, local_orig);
+		if (IS_ERR(prev))
+			goto out;
+	}
 
-    ...
+	if (!prev)
+		goto out;
+
+	if (local_rcv)
+		deliver_clone(prev, skb, local_orig);
+	else
+		__br_forward(prev, skb, local_orig);
+	return;
+
+out:
+	if (!local_rcv)
+		kfree_skb(skb);
 }
 ```
 
-可以看出，`br_flood` 操作还是比较清晰的：遍历连接在网桥设备上的每一个端口，判断是否符合当前广播的类型 UNICAST/MULTICAST/BROADCAST，不符合则直接跳过，否则通过 `maybe_deliver` 发送数据包
+该函数也会调用 `__br_forward` 进行处理，只不过遍历了 `bridge->port_list`，依次进行转发（maybe_deliver 中也调用了 __br_forward 函数）
 
-`maybe_deliver` 则是间接调用了 `deliver_clone`，将 skb 复制一份并调用 `__bf_forward` 转发到特定的端口设备上，就不重复解释了
+#### 2.4.3 br_pass_frame_up
 
-## 3 细说 fdb
+```c
+static int br_pass_frame_up(struct sk_buff *skb)
+{
+	struct net_device *indev, *brdev = BR_INPUT_SKB_CB(skb)->brdev;
 
-前面说到了 fdb（forwarding database），这里有必要说道说道。
+    // ....
 
-### 3.1 MAC 地址
+	indev = skb->dev;
+	skb->dev = brdev;
+	skb = br_handle_vlan(br, NULL, vg, skb);
+	if (!skb)
+		return NET_RX_DROP;
 
-作为一个与交换机功能类似的虚拟设备，bridge 自然也需要实现数据链路层协议相关的功能。
+	return NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN,
+		       dev_net(indev), NULL, skb, indev, NULL,
+		       br_netif_receive_skb);
+}
+```
 
-首先认识一下二层交换机的功能：
+最后会重新调用 `netif_receive_skb` ，但此时 skb->dev 已经替换为网桥设备，网桥上没有注册rx_handler，因此不会再次进入 `br_handle_frame`，而是会调用 ptype 协议链上对应的协议处理函数进入上层处理
 
-1. 收到某网段（设为A）MAC 地址为 X 的计算机发给 MAC 地址为 Y 的计算机的数据包。交换机从而记下了 MAC 地址 X 在网段 A。这称为学习（learning）。
-2. 交换机还不知道MAC地址Y在哪个网段上，于是向除了 A 以外的所有网段转发该数据包。这称为泛洪（flooding）。
-3. MAC地址Y的计算机收到该数据包，向 MAC 地址 X 发出确认包。交换机收到该包后，从而记录下 MAC 地址 Y 所在的网段。
-4. 交换机向MAC地址X转发确认包。这称为转发（forwarding）。
-5. 交换机收到一个数据包，查表后发现该数据包的来源地址与目的地址属于同一网段。交换机将不处理该数据包。这称为过滤（filtering）。
-6. 交换机内部的MAC地址-网段查询表的每条记录采用时间戳记录最后一次访问的时间。早于某个阈值（用户可配置）的记录被清除。这称为老化（aging）。
+### 2.5 fdb 
 
-这里需要插一句话，如果对二层交换机的原理不大了解，可以先回顾一下和 MAC 地址有关的三层协议：ARP（address resolution protocol）-- 地址解析协议。
+fdb 全称为 forwarding database，也就是维护 MAC 地址到设备端口之间的映射数据表。用于辅助 forward，flood，multicast 等核心功能。
 
-ARP 协议的作用是，通过 IP 地址解析出实际的 MAC 地址，将数据包发送到对应的设备上。ARP 协议需要一张表格，表格中存储了所有的 IP 地址和 MAC 地址的对应关系，即 arp_table。二层交换机也是如此，只不过，这里的映射关系不再是 IP-MAC，而是 MAC-端口。记录这种映射关系的表格称为 fdb。
-
-### 3.2 fdb
+别看它名字很高大上，其实原理非常简答，就是通过增删改查操作维护这张映射表，同时通过一些过期策略维护数据的时效性。这里不多赘述。

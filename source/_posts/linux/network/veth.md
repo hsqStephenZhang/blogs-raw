@@ -1,7 +1,7 @@
 ---
 title: veth 
 categories: [linux, network, namespace, veth]
-date: 2022-2-13 13:37:45
+date: 2022-2-13 13:37:00
 ---
 
 ## 1. veth 是什么
@@ -106,13 +106,13 @@ static int veth_newlink(struct net *src_net, struct net_device *dev,
 }
 ```
 
-veth 由两个设备组成，其中 dev 在调用 `veth_newlink` 之前已经创建完成了，接下来首先需要通过 `rtnl_create_link` 创建另一个设备 peer，并通过 `register_netdevice` 分别将 peer 和 dev 注册到 netdevice 列表当中
+veth 由两个设备组成，其中 dev 在调用 `veth_newlink` 之前已经创建完成了，接下来首先需要通过 `rtnl_create_link` 创建另一个设备 peer，并通过 `register_netdevice` 分别将 peer 和 dev 注册到系统的 netdevice 列表当中
 
-下一步是 veth 的核心：通过 priv 字段关联 dev 和 peer
+下一步是 veth 的核心：通过 priv 字段关联 dev 和 peer，即 `rcu_assign_pointer(priv->peer, peer)` 和 `rcu_assign_pointer(priv->peer, dev)`
 
 这里有必要解释一下 `net_device` 的结构，以及 `netdev_priv` 的作用
 
-Kernel 使用 `net_device` 来表示一个网络设备，但是不同厂商的设备规格有一定差别，所以 net_device 结构体采用了**面向对象**的思想，不仅有所有设备共有的结构（基类），还保留了私有数据的存储空间（子类），私有结构一般保存在 net_device 对象结束之后的位置（不难从 `netdev_priv` 中的 `sizeof(struct net_device` 得到证实），示意图如下所示：
+Kernel 使用 `net_device` 来对网络设备进行抽象，但是不同厂商的设备规格有一定差别，所以 net_device 结构体采用了**面向对象**的思想，不仅有所有设备共有的结构（基类），还保留了私有数据的存储空间（子类），私有结构一般保存在 net_device 对象结束之后的位置（不难从 `netdev_priv` 中的 `sizeof(struct net_device` 得到证实），从而可以轻松使用强制类型转换分别获取到父类和子类，示意图如下所示：
 
 ```text
 
@@ -145,7 +145,7 @@ struct veth_priv {
 };
 ```
 
-因此，通过 peer 字段就能关联另一个 `net_device`，`veth_newlink` 中 dev 与 peer 的配对过程也就很清晰了。
+通过私有结构中的 peer 字段就能关联另一个 `net_device`，这下你应该理解了 veth **pair** 是如何成双结对的了。
 
 ### 2.2 初始化 veth
 
@@ -163,9 +163,9 @@ static void veth_setup(struct net_device *dev)
 }
 ```
 
-关注 `dev->netdev_ops = &veth_netdev_ops;`，因为我们都知道，内核最终发送 skb 数据包就是通过回调 `netdev_ops->ndo_start_xmit`，这样就进入到了 veth 的掌握之中。
+最重要的是通过 `dev->netdev_ops = &veth_netdev_ops;` 设置了收发包的处理函数，典型的 Linux 回调设计模式。
 
-同时，在 veth 模块的初始化操作中，还将 veth_netdev_ops 注册到了 rtnetlink 中，从而可以通过 netlink 向外提供服务
+在 veth **模块**的初始化操作中，还将 veth_netdev_ops 注册到了 rtnetlink 中，从而可以通过 netlink 向外提供服务
 
 ```c
 static __init int veth_init(void)
@@ -178,7 +178,7 @@ static __init int veth_init(void)
 
 ### 2.3 发送数据
 
-在驱动层，内核通过 `netdev_ops->ndo_start_xmit` 发送数据包，前面说到，`veth_setup` 函数中已经将 netdev_ops 设置为 veth_netdev_ops，其中的 ndo_start_xmit 对应下面的 `veth_xmit`
+在驱动层，内核通过 `netdev_ops->ndo_start_xmit` 发送数据包，前面说到，`veth_setup` 函数中已经将 netdev_ops 设置为 `veth_netdev_ops`，其中 `ndo_start_xmit` 对应下面的 `veth_xmit`
 
 ```c
 static netdev_tx_t veth_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -204,9 +204,7 @@ drop:
 }
 ```
 
-来看该函数的逻辑：首先获取到了 `veth_priv` 结构中的 peer，也就是与当前设备关联的另一个虚拟网络设备，接下来调用 `veth_forward_skb`
-
-该函数的命名还是非常贴切的：将 skb 数据包转发到 veth 的 peer 上
+来看该函数的逻辑：首先获取到了 `veth_priv` 结构中的 peer，也就是 veth 的对端虚拟网络设备，接下来调用 `veth_forward_skb`，将数据包转发到 peer 上。
 
 ```c
 static int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
@@ -218,16 +216,18 @@ static int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
 }
 ```
 
-`veth_forward_skb` 有两条路径来处理数据包，暂且不论第一条 xdp 处理路径，`netif_rx` 才是热路径，其最终调用了 `netif_rx_internal`，将 skb 放到了 cpu backlog 队列中，并且发送软中断进行处理，之后就进入到网络收包路径上，最终调用 peer 的收包回调函数进行处理（dev 和 peer 的 net_dev_ops 分别在 veth_setup 和 veth_newlink 中设置，不过都为 veth_netdev_ops）
+其实，无论什么时候，将数据包从网络层发送到网络设备上，最重要的都是设置 skb 对应的 net_device，从而调用对应的 `net_device_ops->ndo_start_xmit`。veth 数据包既然要发送到另一端的设备上，只需要将 skb->dev 设置为 peer 即可，之后便可以走正常的网络包接收路径 `netif_rx`。
+
+`netif_rx` 操作中，主要是将数据包放置到了 `backlog` 队列中，触发自底向上的收包流程，从这里开始，便与物理网络设备无异了。
 
 ```c
 static int netif_rx_internal(struct sk_buff *skb)
 {
-    int ret;
-    ...
-    trace_netif_rx(skb);
+	// ...
     ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
-    ...
-    return ret;
+    // ...
+	return ret;
 }
 ```
+
+很有意思的一点是，从 veth_xmit 这个发送数据包的路径，转移到了 netif_rx_internal 这个接收数据包的路径，利用好 veth 这个特点，可以完成很多有趣的事情。比如 docker 中的桥接模式，就是非常典型的应用。
